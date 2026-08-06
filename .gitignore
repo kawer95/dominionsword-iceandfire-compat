@@ -1,0 +1,13 @@
+.gradle/
+build/
+run/
+run-libs/
+.idea/
+out/
+*.iml
+*.log
+*.tmp
+local.properties
+libs/
+/wrapper/
+gradle/wrapper/dists/

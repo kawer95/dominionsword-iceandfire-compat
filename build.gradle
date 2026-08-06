@@ -1,0 +1,60 @@
+plugins {
+    id 'eclipse'
+    id 'idea'
+    id 'net.minecraftforge.gradle' version '6.0.54'
+    id 'org.spongepowered.mixin' version '0.7.+'
+}
+
+group = mod_group_id
+version = mod_version
+base { archivesName = mod_id }
+java { toolchain.languageVersion = JavaLanguageVersion.of(17) }
+
+minecraft {
+    mappings channel: mapping_channel, version: mapping_version
+    copyIdeResources = true
+    runs {
+        configureEach {
+            workingDirectory project.file('run')
+            property 'forge.logging.console.level', 'info'
+            property 'mixin.env.remapRefMap', 'true'
+            property 'mixin.env.refMapRemappingFile', "${projectDir}/build/createSrgToMcp/output.srg"
+            mods { "${mod_id}" { source sourceSets.main } }
+        }
+        client {}
+        server { args '--nogui' }
+    }
+}
+
+repositories { mavenCentral() }
+
+dependencies {
+    minecraft "net.minecraftforge:forge:${minecraft_version}-${forge_version}"
+    annotationProcessor 'org.spongepowered:mixin:0.8.5:processor'
+    if (!project.hasProperty('dominionsword_jar')) throw new GradleException('Missing -Pdominionsword_jar')
+    if (!project.hasProperty('iaf_jar')) throw new GradleException('Missing -Piaf_jar')
+    if (!project.hasProperty('uranus_jar')) throw new GradleException('Missing -Puranus_jar')
+    compileOnly files(project.property('dominionsword_jar'))
+    compileOnly files(project.property('iaf_jar'))
+    compileOnly files(project.property('uranus_jar'))
+}
+
+mixin { add sourceSets.main, 'dominionsword_iceandfire_compat.refmap.json' }
+
+tasks.named('processResources', ProcessResources).configure {
+    filteringCharset = 'UTF-8'
+    def props = [minecraft_version_range: minecraft_version_range, forge_version_range: forge_version_range,
+                 loader_version_range: loader_version_range, mod_id: mod_id, mod_name: mod_name,
+                 mod_license: mod_license, mod_version: mod_version, mod_authors: mod_authors,
+                 mod_description: mod_description]
+    inputs.properties props
+    filesMatching(['META-INF/mods.toml', 'pack.mcmeta']) { expand props + [project: project] }
+}
+
+tasks.named('jar', Jar).configure {
+    from('LICENSE')
+    from('RELEASE_NOTES.md')
+    manifest { attributes(['MixinConfigs': 'dominionsword_iceandfire_compat.mixins.json']) }
+    finalizedBy 'reobfJar'
+}
+tasks.withType(JavaCompile).configureEach { options.encoding = 'UTF-8' }
