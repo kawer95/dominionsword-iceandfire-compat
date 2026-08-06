@@ -10,23 +10,41 @@ import net.minecraft.world.phys.Vec3;
 import java.util.UUID;
 
 /**
- * Persistent Dominion-controlled dragon state. Everything is stored on the dragon (and the
- * designated rider) so chunk unload and server restarts restore the same ride.
+ * Persistent Dominion-controlled dragon state.
+ *
+ * <p>All state lives under the {@value #STATE_TAG} sub-tag on the dragon's persistent data; the
+ * rider marker uses the same sub-tag on the rider entity. Field ownership:
+ *
+ * <table>
+ *   <caption>State fields</caption>
+ *   <tr><th>Key</th><th>Owner</th><th>Persistent</th><th>Client sync</th></tr>
+ *   <tr><td>controlled</td><td>dragon</td><td>yes</td><td>no</td></tr>
+ *   <tr><td>rider</td><td>dragon</td><td>yes</td><td>via {@link DragonRiderSync}</td></tr>
+ *   <tr><td>rider_dragon</td><td>rider</td><td>yes</td><td>no</td></tr>
+ *   <tr><td>auto</td><td>dragon</td><td>yes</td><td>no</td></tr>
+ *   <tr><td>phase</td><td>dragon</td><td>yes</td><td>no</td></tr>
+ *   <tr><td>goal_*</td><td>dragon</td><td>yes</td><td>no</td></tr>
+ *   <tr><td>landing_*</td><td>dragon</td><td>yes</td><td>no</td></tr>
+ *   <tr><td>landing_cooldown</td><td>dragon</td><td>no</td><td>no</td></tr>
+ *   <tr><td>attack</td><td>dragon</td><td>yes</td><td>no</td></tr>
+ *   <tr><td>prev_command</td><td>dragon</td><td>yes</td><td>no</td></tr>
+ *   <tr><td>path_tick / path_fails</td><td>dragon</td><td>no</td><td>no</td></tr>
+ * </table>
  */
 public final class DragonRideState {
-    public static final String CONTROLLED = "DominionIafControlled";
-    public static final String RIDER = "DominionIafRider";
-    public static final String RIDER_DRAGON = "DominionIafRiderDragon";
-    public static final String AUTO_CONTROL = "DominionIafAutoControl";
-    public static final String PHASE = "DominionIafPhase";
-    public static final String GOAL_X = "DominionIafGoalX";
-    public static final String GOAL_Y = "DominionIafGoalY";
-    public static final String GOAL_Z = "DominionIafGoalZ";
-    public static final String LANDING_X = "DominionIafLandingX";
-    public static final String LANDING_Y = "DominionIafLandingY";
-    public static final String LANDING_Z = "DominionIafLandingZ";
-    public static final String ATTACK_TARGET = "DominionIafAttackTarget";
-    public static final String PREV_COMMAND = "DominionIafPrevCommand";
+    public static final String STATE_TAG = "dominionsword_iaf";
+    private static final String CONTROLLED = "controlled";
+    private static final String RIDER = "rider";
+    private static final String RIDER_DRAGON = "rider_dragon";
+    private static final String AUTO_CONTROL = "auto";
+    private static final String PHASE = "phase";
+    private static final String GOAL = "goal";
+    private static final String LANDING = "landing";
+    private static final String LANDING_COOLDOWN = "landing_cooldown";
+    private static final String ATTACK_TARGET = "attack";
+    private static final String PREV_COMMAND = "prev_command";
+    private static final String PATH_ATTEMPT_TICK = "path_tick";
+    private static final String PATH_FAILS = "path_fails";
 
     public enum Phase {
         GROUND,
@@ -38,24 +56,54 @@ public final class DragonRideState {
     private DragonRideState() {
     }
 
-    private static CompoundTag tag(Entity entity) {
-        return entity.getPersistentData();
+    private static CompoundTag state(Entity entity) {
+        CompoundTag root = entity.getPersistentData();
+        if (!root.contains(STATE_TAG, CompoundTag.TAG_COMPOUND)) root.put(STATE_TAG, new CompoundTag());
+        return root.getCompound(STATE_TAG);
+    }
+
+    static Vec3 readVec3(CompoundTag state, String prefix) {
+        return new Vec3(state.getDouble(prefix + "_x"), state.getDouble(prefix + "_y"), state.getDouble(prefix + "_z"));
+    }
+
+    static void writeVec3(CompoundTag state, String prefix, Vec3 value) {
+        if (value == null) return;
+        state.putDouble(prefix + "_x", value.x);
+        state.putDouble(prefix + "_y", value.y);
+        state.putDouble(prefix + "_z", value.z);
+    }
+
+    static void clearVec3(CompoundTag state, String prefix) {
+        state.remove(prefix + "_x");
+        state.remove(prefix + "_y");
+        state.remove(prefix + "_z");
     }
 
     public static boolean isControlled(EntityDragonBase dragon) {
-        return dragon != null && tag(dragon).getBoolean(CONTROLLED);
+        return dragon != null && state(dragon).getBoolean(CONTROLLED);
     }
 
     public static void setControlled(EntityDragonBase dragon, boolean controlled) {
-        if (dragon != null) tag(dragon).putBoolean(CONTROLLED, controlled);
+        if (dragon != null) state(dragon).putBoolean(CONTROLLED, controlled);
     }
 
+    /** Server reads the authoritative NBT marker; client reads the synced {@link DragonRiderSync} value. */
     public static UUID riderId(EntityDragonBase dragon) {
-        return dragon != null && tag(dragon).hasUUID(RIDER) ? tag(dragon).getUUID(RIDER) : null;
+        if (dragon == null) return null;
+        if (dragon.level().isClientSide()) return DragonRiderSync.getRiderId(dragon);
+        CompoundTag state = state(dragon);
+        return state.hasUUID(RIDER) ? state.getUUID(RIDER) : null;
     }
 
     public static void setRiderId(EntityDragonBase dragon, UUID rider) {
-        if (dragon != null && rider != null) tag(dragon).putUUID(RIDER, rider);
+        if (dragon == null) return;
+        if (rider == null) {
+            state(dragon).remove(RIDER);
+            DragonRiderSync.setRiderId(dragon, null);
+        } else {
+            state(dragon).putUUID(RIDER, rider);
+            DragonRiderSync.setRiderId(dragon, rider);
+        }
     }
 
     public static Mob riderEntity(EntityDragonBase dragon) {
@@ -66,25 +114,28 @@ public final class DragonRideState {
     }
 
     public static void setRiderDragon(Mob rider, UUID dragonId) {
-        if (rider != null && dragonId != null) tag(rider).putUUID(RIDER_DRAGON, dragonId);
+        if (rider != null && dragonId != null) state(rider).putUUID(RIDER_DRAGON, dragonId);
     }
 
     public static void clearRiderMarkers(EntityDragonBase dragon, Mob rider) {
-        if (dragon != null) tag(dragon).remove(RIDER);
-        if (rider != null) tag(rider).remove(RIDER_DRAGON);
+        if (dragon != null) {
+            state(dragon).remove(RIDER);
+            DragonRiderSync.setRiderId(dragon, null);
+        }
+        if (rider != null) state(rider).remove(RIDER_DRAGON);
     }
 
     public static boolean autoControl(EntityDragonBase dragon) {
-        return dragon != null && tag(dragon).getBoolean(AUTO_CONTROL);
+        return dragon != null && state(dragon).getBoolean(AUTO_CONTROL);
     }
 
     public static void setAutoControl(EntityDragonBase dragon, boolean auto) {
-        if (dragon != null) tag(dragon).putBoolean(AUTO_CONTROL, auto);
+        if (dragon != null) state(dragon).putBoolean(AUTO_CONTROL, auto);
     }
 
     public static Phase phase(EntityDragonBase dragon) {
         if (dragon == null) return Phase.GROUND;
-        String name = tag(dragon).getString(PHASE);
+        String name = state(dragon).getString(PHASE);
         if (name.isEmpty()) return Phase.GROUND;
         try {
             return Phase.valueOf(name);
@@ -94,72 +145,124 @@ public final class DragonRideState {
     }
 
     public static void setPhase(EntityDragonBase dragon, Phase phase) {
-        if (dragon != null) tag(dragon).putString(PHASE, phase == null ? Phase.GROUND.name() : phase.name());
+        if (dragon != null) state(dragon).putString(PHASE, phase == null ? Phase.GROUND.name() : phase.name());
     }
 
     public static boolean hasGoal(EntityDragonBase dragon) {
-        return dragon != null && tag(dragon).contains(GOAL_X);
+        return dragon != null && state(dragon).contains(GOAL + "_x");
     }
 
     public static Vec3 goal(EntityDragonBase dragon) {
-        return new Vec3(tag(dragon).getDouble(GOAL_X), tag(dragon).getDouble(GOAL_Y), tag(dragon).getDouble(GOAL_Z));
+        return readVec3(state(dragon), GOAL);
     }
 
     public static void setGoal(EntityDragonBase dragon, Vec3 goal) {
-        if (dragon == null || goal == null) return;
-        tag(dragon).putDouble(GOAL_X, goal.x);
-        tag(dragon).putDouble(GOAL_Y, goal.y);
-        tag(dragon).putDouble(GOAL_Z, goal.z);
+        if (dragon != null) writeVec3(state(dragon), GOAL, goal);
     }
 
     public static void clearGoal(EntityDragonBase dragon) {
-        if (dragon == null) return;
-        tag(dragon).remove(GOAL_X);
-        tag(dragon).remove(GOAL_Y);
-        tag(dragon).remove(GOAL_Z);
-    }
-
-    public static Vec3 landingSpot(EntityDragonBase dragon) {
-        return new Vec3(tag(dragon).getDouble(LANDING_X), tag(dragon).getDouble(LANDING_Y), tag(dragon).getDouble(LANDING_Z));
+        if (dragon != null) clearVec3(state(dragon), GOAL);
     }
 
     public static boolean hasLandingSpot(EntityDragonBase dragon) {
-        return dragon != null && tag(dragon).contains(LANDING_X);
+        return dragon != null && state(dragon).contains(LANDING + "_x");
+    }
+
+    public static Vec3 landingSpot(EntityDragonBase dragon) {
+        return readVec3(state(dragon), LANDING);
     }
 
     public static void setLandingSpot(EntityDragonBase dragon, Vec3 spot) {
-        if (dragon == null || spot == null) return;
-        tag(dragon).putDouble(LANDING_X, spot.x);
-        tag(dragon).putDouble(LANDING_Y, spot.y);
-        tag(dragon).putDouble(LANDING_Z, spot.z);
+        if (dragon != null) writeVec3(state(dragon), LANDING, spot);
     }
 
     public static void clearLandingSpot(EntityDragonBase dragon) {
-        if (dragon == null) return;
-        tag(dragon).remove(LANDING_X);
-        tag(dragon).remove(LANDING_Y);
-        tag(dragon).remove(LANDING_Z);
+        if (dragon != null) clearVec3(state(dragon), LANDING);
+    }
+
+    public static long landingCooldownUntil(EntityDragonBase dragon) {
+        return dragon != null ? state(dragon).getLong(LANDING_COOLDOWN) : 0L;
+    }
+
+    public static void setLandingCooldown(EntityDragonBase dragon, long tick) {
+        if (dragon != null) state(dragon).putLong(LANDING_COOLDOWN, tick);
+    }
+
+    public static void clearLandingCooldown(EntityDragonBase dragon) {
+        if (dragon != null) state(dragon).remove(LANDING_COOLDOWN);
     }
 
     public static UUID attackTarget(EntityDragonBase dragon) {
-        return dragon != null && tag(dragon).hasUUID(ATTACK_TARGET) ? tag(dragon).getUUID(ATTACK_TARGET) : null;
+        CompoundTag state = dragon == null ? null : state(dragon);
+        return state != null && state.hasUUID(ATTACK_TARGET) ? state.getUUID(ATTACK_TARGET) : null;
     }
 
     public static void setAttackTarget(EntityDragonBase dragon, UUID target) {
         if (dragon == null) return;
-        if (target == null) tag(dragon).remove(ATTACK_TARGET);
-        else tag(dragon).putUUID(ATTACK_TARGET, target);
+        if (target == null) state(dragon).remove(ATTACK_TARGET);
+        else state(dragon).putUUID(ATTACK_TARGET, target);
     }
 
     public static void clearAttackTarget(EntityDragonBase dragon) {
-        if (dragon != null) tag(dragon).remove(ATTACK_TARGET);
+        if (dragon != null) state(dragon).remove(ATTACK_TARGET);
     }
 
     public static int prevCommand(EntityDragonBase dragon) {
-        return dragon != null ? tag(dragon).getInt(PREV_COMMAND) : 0;
+        return dragon != null ? state(dragon).getInt(PREV_COMMAND) : 0;
     }
 
     public static void setPrevCommand(EntityDragonBase dragon, int command) {
-        if (dragon != null) tag(dragon).putInt(PREV_COMMAND, command);
+        if (dragon != null) state(dragon).putInt(PREV_COMMAND, command);
+    }
+
+    public static long pathAttemptTick(EntityDragonBase dragon) {
+        return dragon != null ? state(dragon).getLong(PATH_ATTEMPT_TICK) : 0L;
+    }
+
+    public static void setPathAttemptTick(EntityDragonBase dragon, long tick) {
+        if (dragon != null) state(dragon).putLong(PATH_ATTEMPT_TICK, tick);
+    }
+
+    public static int pathFailCount(EntityDragonBase dragon) {
+        return dragon != null ? state(dragon).getInt(PATH_FAILS) : 0;
+    }
+
+    public static void setPathFailCount(EntityDragonBase dragon, int fails) {
+        if (dragon != null) state(dragon).putInt(PATH_FAILS, fails);
+    }
+
+    public static void clearPathBackoff(EntityDragonBase dragon) {
+        if (dragon != null) clearPathBackoff(state(dragon));
+    }
+
+    /**
+     * Single cleanup entry point for control end.
+     *
+     * @param keepRider       keep the designated rider marker pair
+     * @param keepOfflineTask keep goal/landing/attack so a preserved offline order can continue
+     */
+    public static void clearControlState(EntityDragonBase dragon, boolean keepRider, boolean keepOfflineTask) {
+        if (dragon == null) return;
+        clearStateFields(state(dragon), keepOfflineTask);
+        if (!keepRider) {
+            Mob rider = riderEntity(dragon);
+            clearRiderMarkers(dragon, rider);
+        }
+    }
+
+    static void clearStateFields(CompoundTag state, boolean keepOfflineTask) {
+        if (!keepOfflineTask) {
+            clearVec3(state, GOAL);
+            clearVec3(state, LANDING);
+            state.remove(ATTACK_TARGET);
+        }
+        state.remove(LANDING_COOLDOWN);
+        clearPathBackoff(state);
+        state.remove(PHASE);
+    }
+
+    private static void clearPathBackoff(CompoundTag state) {
+        state.remove(PATH_ATTEMPT_TICK);
+        state.remove(PATH_FAILS);
     }
 }

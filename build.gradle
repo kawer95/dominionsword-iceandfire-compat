@@ -2,7 +2,7 @@ plugins {
     id 'eclipse'
     id 'idea'
     id 'net.minecraftforge.gradle' version '6.0.54'
-    id 'org.spongepowered.mixin' version '0.7.+'
+    id 'org.spongepowered.mixin' version '0.7.38'
 }
 
 group = mod_group_id
@@ -37,9 +37,19 @@ dependencies {
     compileOnly files(project.property('dominionsword_jar'))
     compileOnly files(project.property('iaf_jar'))
     compileOnly files(project.property('uranus_jar'))
+    testImplementation files(project.property('dominionsword_jar'))
+    testImplementation files(project.property('iaf_jar'))
+    testImplementation files(project.property('uranus_jar'))
+    testImplementation platform('org.junit:junit-bom:5.10.2')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
 
 mixin { add sourceSets.main, 'dominionsword_iceandfire_compat.refmap.json' }
+
+test {
+    useJUnitPlatform()
+}
 
 tasks.named('processResources', ProcessResources).configure {
     filteringCharset = 'UTF-8'

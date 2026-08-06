@@ -15,6 +15,7 @@ import net.minecraft.world.phys.Vec3;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 
 /**
  * Dominion Sword vehicle bridge for Ice And Fire CE dragons.
@@ -123,11 +124,11 @@ public final class IceAndFireDragonVehicleAdapter implements DominionVehicleAdap
     public boolean move(ServerPlayer player, Entity vehicle, Vec3 target) {
         if (!(vehicle instanceof EntityDragonBase dragon) || !valid(dragon) || target == null) return false;
         if (player != null && !DragonControlPolicy.allows(player, dragon)) return false;
-        DragonRideState.setGoal(dragon, target);
-        DragonRideState.setPhase(dragon, DragonRideState.Phase.GROUND);
-        DragonAutopilot.wake(dragon);
-        dragon.getNavigation().stop();
-        DragonAutopilot.stepMove(dragon, target);
+        DragonAutopilot.updateGoal(dragon, target);
+        if (player == null) {
+            // Offline persistent-task pulse: this is the only driver while the commander is offline.
+            DragonAutopilot.stepMove(dragon, DragonRideState.goal(dragon));
+        }
         return true;
     }
 
@@ -135,6 +136,12 @@ public final class IceAndFireDragonVehicleAdapter implements DominionVehicleAdap
     public boolean attack(ServerPlayer player, Entity vehicle, LivingEntity target) {
         if (!(vehicle instanceof EntityDragonBase dragon) || !valid(dragon) || target == null || !target.isAlive()) return false;
         if (player != null && !DragonControlPolicy.allows(player, dragon)) return false;
+        LivingEntity currentTarget = dragon.getTarget();
+        UUID commanded = DragonRideState.attackTarget(dragon);
+        if (commanded != null && commanded.equals(target.getUUID())
+                && currentTarget != null && currentTarget.getUUID().equals(target.getUUID())) {
+            return true;
+        }
         DragonRideState.setAttackTarget(dragon, target.getUUID());
         dragon.setTarget(target);
         return true;

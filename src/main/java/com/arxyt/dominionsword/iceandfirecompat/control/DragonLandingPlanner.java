@@ -3,13 +3,29 @@ package com.arxyt.dominionsword.iceandfirecompat.control;
 import com.iafenvoy.iceandfire.entity.EntityDragonBase;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.levelgen.Heightmap;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 
-/** Finds a clear landing pad near a requested position that fits the dragon's vertical clearance. */
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * Bounded landing-pad search.
+ *
+ * <p>The search window is limited vertically around the requested center, surfaces are found via
+ * the motion-blocking heightmap, every candidate must fit the dragon's full AABB and avoid fluids
+ * and fire, and the whole search respects hard read/candidate budgets so it can never spike TPS.
+ */
 public final class DragonLandingPlanner {
-    private static final int SEARCH_RADIUS = 12;
-    private static final int STEP = 2;
+    static final int SEARCH_RADIUS = 12;
+    static final int STEP = 2;
+    static final int VERTICAL_WINDOW = 24;
+    static final int MAX_CANDIDATES = 64;
+    static final int MAX_READS = 512;
+    static final int COOLDOWN_TICKS = 40;
 
     private DragonLandingPlanner() {
     }
@@ -17,40 +33,76 @@ public final class DragonLandingPlanner {
     public static Vec3 findLandingSpot(EntityDragonBase dragon, Vec3 center) {
         if (dragon == null || center == null) return null;
         Level level = dragon.level();
-        double clearance = Math.max(8.0D, dragon.getBbHeight() + 4.0D);
+        int minBuild = level.getMinBuildHeight();
+        int maxBuild = level.getMaxBuildHeight();
+        int minY = Math.max(minBuild, (int) Math.floor(center.y) - VERTICAL_WINDOW);
+        int maxY = Math.min(maxBuild - 1, (int) Math.floor(center.y) + VERTICAL_WINDOW);
         int cx = (int) Math.floor(center.x);
-        int cy = (int) Math.floor(center.y);
         int cz = (int) Math.floor(center.z);
-        for (int radius = 0; radius <= SEARCH_RADIUS; radius += STEP) {
-            for (int dx = -radius; dx <= radius; dx += STEP) {
-                for (int dz = -radius; dz <= radius; dz += STEP) {
+        Budget budget = new Budget();
+        for (int radius = 0; radius <= SEARCH_RADIUS && !budget.exceeded(); radius += STEP) {
+            for (int dx = -radius; dx <= radius && !budget.exceeded(); dx += STEP) {
+                for (int dz = -radius; dz <= radius && !budget.exceeded(); dz += STEP) {
                     if (radius > 0 && Math.max(Math.abs(dx), Math.abs(dz)) != radius) continue;
-                    BlockPos surface = surface(level, new BlockPos(cx + dx, cy, cz + dz));
-                    if (surface != null && clearColumn(level, surface, clearance)) {
-                        return Vec3.atBottomCenterOf(surface).add(0.0D, 0.1D, 0.0D);
-                    }
+                    budget.candidates++;
+                    int surfaceY = level.getHeight(Heightmap.Types.MOTION_BLOCKING, cx + dx, cz + dz);
+                    budget.reads++;
+                    if (surfaceY < minY || surfaceY > maxY) continue;
+                    Vec3 spot = new Vec3(cx + dx + 0.5D, surfaceY + 1.0D, cz + dz + 0.5D);
+                    BlockPos ground = BlockPos.containing(spot).below();
+                    BlockState groundState = level.getBlockState(ground);
+                    budget.reads++;
+                    if (groundState.isAir() || groundState.canBeReplaced()
+                            || groundState.getCollisionShape(level, ground).isEmpty()) continue;
+                    if (clearPad(dragon, level, spot, ground, budget)) return spot;
                 }
             }
         }
         return null;
     }
 
-    private static BlockPos surface(Level level, BlockPos pos) {
-        for (int y = level.getMaxBuildHeight() - 1; y >= level.getMinBuildHeight(); y--) {
-            BlockPos candidate = new BlockPos(pos.getX(), y, pos.getZ());
-            BlockState state = level.getBlockState(candidate);
-            if (!state.isAir() && !state.getCollisionShape(level, candidate).isEmpty() && !state.canBeReplaced()) {
-                return candidate.above();
+    /** Ring positions for tests and for the search above; sampled with the configured step. */
+    static List<BlockPos> ring(int cx, int cz, int radius, int step) {
+        List<BlockPos> out = new ArrayList<>();
+        for (int dx = -radius; dx <= radius; dx += step) {
+            for (int dz = -radius; dz <= radius; dz += step) {
+                if (radius == 0 || Math.max(Math.abs(dx), Math.abs(dz)) == radius) {
+                    out.add(new BlockPos(cx + dx, 0, cz + dz));
+                }
             }
         }
-        return null;
+        return out;
     }
 
-    private static boolean clearColumn(Level level, BlockPos ground, double height) {
-        for (int dy = 1; dy < height; dy++) {
-            BlockState state = level.getBlockState(ground.offset(0, dy, 0));
-            if (!state.isAir() && !state.canBeReplaced()) return false;
+    static int candidateCount() {
+        int count = 0;
+        for (int radius = 0; radius <= SEARCH_RADIUS; radius += STEP) {
+            count += ring(0, 0, radius, STEP).size();
+        }
+        return count;
+    }
+
+    private static boolean clearPad(EntityDragonBase dragon, Level level, Vec3 spot, BlockPos ground, Budget budget) {
+        AABB moved = dragon.getBoundingBox().move(spot.x - dragon.getX(), spot.y - dragon.getY(), spot.z - dragon.getZ());
+        if (!level.noCollision(dragon, moved)) return false;
+        int bottom = (int) Math.floor(moved.minY);
+        int top = (int) Math.min(level.getMaxBuildHeight() - 1, (int) Math.ceil(moved.maxY));
+        for (int y = Math.max(level.getMinBuildHeight(), bottom); y <= top; y++) {
+            budget.reads++;
+            if (budget.exceeded()) return false;
+            BlockPos pos = new BlockPos(ground.getX(), y, ground.getZ());
+            if (level.getBlockState(pos).getBlock() == Blocks.FIRE) return false;
+            if (!level.getFluidState(pos).isEmpty()) return false;
         }
         return true;
+    }
+
+    private static final class Budget {
+        int reads;
+        int candidates;
+
+        boolean exceeded() {
+            return reads >= MAX_READS || candidates >= MAX_CANDIDATES;
+        }
     }
 }

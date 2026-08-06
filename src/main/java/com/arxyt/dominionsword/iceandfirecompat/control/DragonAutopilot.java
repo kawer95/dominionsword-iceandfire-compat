@@ -11,26 +11,26 @@ import net.minecraft.world.phys.Vec3;
 import java.util.UUID;
 
 /**
- * Per-tick driver for a Dominion-controlled dragon. The dragon keeps its native
- * navigators and flight manager; this class only feeds goals and transitions them
- * between ground, takeoff, cruise and landing.
+ * Per-tick driver for a Dominion-controlled dragon.
+ *
+ * <p>The dragon keeps its native navigators and flight manager; this class only feeds goals and
+ * transitions them between ground, takeoff, cruise and landing. Online dragons are driven exactly
+ * once per tick from {@link #tick(MinecraftServer)}; offline persistent tasks are driven through
+ * the adapter's {@code move(null, ...)} pulse.
  */
 public final class DragonAutopilot {
-    public static final double AUTO_TAKEOFF_DISTANCE = 48.0D;
-    public static final double AUTO_LAND_DISTANCE = 24.0D;
-    public static final double CRUISE_ALTITUDE = 16.0D;
-    public static final double MAX_FLIGHT_ALTITUDE = 128.0D;
-    private static final double TAKEOFF_LIFT = 12.0D;
-    private static final double VERTICAL_TAKEOFF_THRESHOLD = 10.0D;
     private static final double ARRIVAL_HORIZONTAL = 3.5D;
     private static final double ARRIVAL_VERTICAL = 2.5D;
     private static final double LANDING_HOLD_RADIUS = 5.0D;
     private static final double LANDING_HOLD_ALTITUDE = 8.0D;
+    private static final int PATH_RETRY_BASE_TICKS = 10;
+    private static final int PATH_RETRY_MAX_TICKS = 40;
+    private static final int PATH_MAX_FAILURES = 3;
 
     private DragonAutopilot() {
     }
 
-    /** Steps every dragon in an online player's selection. Offline persistent tasks are driven through the adapter. */
+    /** Single online driver: steps every dragon in an online player's selection. */
     public static void tick(MinecraftServer server) {
         if (server == null) return;
         for (ServerPlayer player : server.getPlayerList().getPlayers()) {
@@ -74,10 +74,8 @@ public final class DragonAutopilot {
             wake(dragon);
             return;
         }
-        DragonRideState.clearAttackTarget(dragon);
-        DragonRideState.clearGoal(dragon);
-        DragonRideState.clearLandingSpot(dragon);
         boolean hasRider = DragonRideState.riderId(dragon) != null;
+        DragonRideState.clearControlState(dragon, hasRider, false);
         dragon.setCommand(hasRider ? 0 : DragonRideState.prevCommand(dragon));
         DragonRideState.setControlled(dragon, false);
         DragonRideState.setPhase(dragon, DragonRideState.Phase.GROUND);
@@ -87,7 +85,27 @@ public final class DragonAutopilot {
         }
     }
 
-    /** One navigation step. The adapter calls this for every move order, including offline continuation. */
+    /**
+     * Goal-setter used by the vehicle adapter. Only a materially changed goal resets the phase,
+     * stops the old path and clears landing/backoff state; repeated pulses are no-ops.
+     *
+     * @return true when the goal actually changed
+     */
+    public static boolean updateGoal(EntityDragonBase dragon, Vec3 target) {
+        if (dragon == null || target == null) return false;
+        Vec3 current = DragonRideState.hasGoal(dragon) ? DragonRideState.goal(dragon) : null;
+        if (!DragonMoveMath.goalChanged(current, target)) return false;
+        DragonRideState.setGoal(dragon, target);
+        DragonRideState.setPhase(dragon, DragonRideState.Phase.GROUND);
+        DragonRideState.clearLandingSpot(dragon);
+        DragonRideState.clearLandingCooldown(dragon);
+        DragonRideState.clearPathBackoff(dragon);
+        wake(dragon);
+        if (dragon.getNavigation() != null) dragon.getNavigation().stop();
+        return true;
+    }
+
+    /** One navigation step. Offline continuation calls this from the adapter's {@code move(null, ...)} pulse. */
     public static void stepMove(EntityDragonBase dragon, Vec3 goal) {
         if (dragon == null || goal == null || dragon.isRemoved() || !dragon.isAlive() || dragon.isModelDead()) return;
         wake(dragon);
@@ -97,36 +115,35 @@ public final class DragonAutopilot {
         double vertical = goal.y - dragon.getY();
         DragonRideState.Phase phase = DragonRideState.phase(dragon);
         if (dragon.isFlying() || dragon.isHovering()) {
-            if (phase == DragonRideState.Phase.TAKEOFF) {
-                takeoffTick(dragon);
-                return;
+            switch (DragonMoveMath.decideAirborne(horizontal, auto, phase)) {
+                case TAKEOFF -> takeoffTick(dragon);
+                case LANDING -> landingTick(dragon);
+                case LAND -> beginLanding(dragon, goal);
+                default -> cruiseTick(dragon, goal);
             }
-            if (phase == DragonRideState.Phase.LANDING) {
+            return;
+        }
+        switch (DragonMoveMath.decideGrounded(horizontal, vertical, auto, phase, dragon.onGround())) {
+            case LANDING -> {
                 landingTick(dragon);
                 return;
             }
-            if (auto && horizontal <= AUTO_LAND_DISTANCE) {
-                beginLanding(dragon, goal);
+            case TAKEOFF -> {
+                beginTakeoff(dragon);
                 return;
             }
-            cruiseTick(dragon, goal);
-            return;
-        }
-        if (phase == DragonRideState.Phase.LANDING && !dragon.onGround()) {
-            landingTick(dragon);
-            return;
+            default -> {
+                // continue with ground movement below
+            }
         }
         if (phase == DragonRideState.Phase.TAKEOFF || phase == DragonRideState.Phase.LANDING) {
             endFlight(dragon);
             DragonRideState.setPhase(dragon, DragonRideState.Phase.GROUND);
         }
-        if (auto && (horizontal >= AUTO_TAKEOFF_DISTANCE || vertical > VERTICAL_TAKEOFF_THRESHOLD)) {
-            beginTakeoff(dragon);
-            return;
-        }
         groundMove(dragon, goal);
         if (arrived(dragon, goal)) {
             DragonRideState.clearGoal(dragon);
+            DragonRideState.clearPathBackoff(dragon);
             DragonRideState.setPhase(dragon, DragonRideState.Phase.GROUND);
         }
     }
@@ -143,8 +160,14 @@ public final class DragonAutopilot {
 
     public static void beginLanding(EntityDragonBase dragon, Vec3 center) {
         if (dragon == null || !DragonRideState.isControlled(dragon) || dragon.isModelDead() || !dragon.isAlive()) return;
+        long now = dragon.level().getGameTime();
+        if (now < DragonRideState.landingCooldownUntil(dragon)) {
+            DragonRideState.setPhase(dragon, DragonRideState.Phase.CRUISE);
+            return;
+        }
         Vec3 spot = DragonLandingPlanner.findLandingSpot(dragon, center == null ? dragon.position() : center);
         if (spot == null) {
+            DragonRideState.setLandingCooldown(dragon, now + DragonLandingPlanner.COOLDOWN_TICKS);
             DragonRideState.setPhase(dragon, DragonRideState.Phase.CRUISE);
             return;
         }
@@ -172,8 +195,8 @@ public final class DragonAutopilot {
     }
 
     private static void cruiseTick(EntityDragonBase dragon, Vec3 goal) {
-        double surface = Math.max(goal.y, dragon.getY() - 2.0D);
-        double altitude = Math.min(MAX_FLIGHT_ALTITUDE, Math.max(8.0D, surface + CRUISE_ALTITUDE));
+        double altitude = DragonMoveMath.resolveCruiseAltitude(goal.y, dragon.getY(),
+                dragon.level().getMinBuildHeight(), dragon.level().getMaxBuildHeight());
         dragon.flightManager.setFlightTarget(new Vec3(goal.x, altitude, goal.z));
         if (!dragon.isFlying() && !dragon.isHovering()) {
             dragon.setHovering(true);
@@ -207,14 +230,38 @@ public final class DragonAutopilot {
             DragonRideState.setPhase(dragon, DragonRideState.Phase.GROUND);
             if (DragonRideState.hasGoal(dragon)) {
                 Vec3 goal = DragonRideState.goal(dragon);
-                if (arrived(dragon, goal)) DragonRideState.clearGoal(dragon);
+                if (arrived(dragon, goal)) {
+                    DragonRideState.clearGoal(dragon);
+                    DragonRideState.clearPathBackoff(dragon);
+                }
             }
         }
     }
 
     private static void groundMove(EntityDragonBase dragon, Vec3 goal) {
-        if (dragon.getNavigation().isDone()) {
-            dragon.getNavigation().moveTo(goal.x, goal.y, goal.z, 1.0D);
+        long now = dragon.level().getGameTime();
+        if (dragon.getNavigation().isInProgress()) return;
+        int fails = DragonRideState.pathFailCount(dragon);
+        long lastAttempt = DragonRideState.pathAttemptTick(dragon);
+        if (lastAttempt > 0L && now - lastAttempt < Math.min(PATH_RETRY_MAX_TICKS, PATH_RETRY_BASE_TICKS * (fails + 1))) {
+            return;
+        }
+        DragonRideState.setPathAttemptTick(dragon, now);
+        boolean created = dragon.getNavigation().moveTo(goal.x, goal.y, goal.z, 1.0D);
+        if (created) {
+            DragonRideState.setPathFailCount(dragon, 0);
+            return;
+        }
+        int newFails = fails + 1;
+        DragonRideState.setPathFailCount(dragon, newFails);
+        if (newFails >= PATH_MAX_FAILURES) {
+            if (dragon.hasFlightClearance()) {
+                beginTakeoff(dragon);
+            } else {
+                DragonRideState.clearGoal(dragon);
+                DragonRideState.clearPathBackoff(dragon);
+                DragonRideState.setPhase(dragon, DragonRideState.Phase.GROUND);
+            }
         }
     }
 
@@ -234,7 +281,9 @@ public final class DragonAutopilot {
     }
 
     private static Vec3 liftTarget(EntityDragonBase dragon) {
-        return new Vec3(dragon.getX(), Math.min(MAX_FLIGHT_ALTITUDE, dragon.getY() + TAKEOFF_LIFT), dragon.getZ());
+        double y = DragonMoveMath.resolveLiftAltitude(dragon.getY(),
+                dragon.level().getMinBuildHeight(), dragon.level().getMaxBuildHeight());
+        return new Vec3(dragon.getX(), y, dragon.getZ());
     }
 
     private static boolean arrived(EntityDragonBase dragon, Vec3 goal) {

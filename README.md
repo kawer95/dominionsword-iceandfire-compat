@@ -18,3 +18,17 @@ Ice And Fire CE（1.2.7）的龙通过 `DominionVehicleAdapter` 接入 Dominion 
 ```
 
 也可以通过 `-Piaf_jar` / `-Puranus_jar` 直接指向磁盘上任意位置的 jar。
+
+## 兼容范围
+
+- 已对照 Ice And Fire CE `[1.2.7, 1.3)` 的 Forge 发布版 jar 验证 Mixin 目标方法签名。
+- 需要 Dominion Sword `[1.27.0,)`（`canSelfDrive` / `actionEnabled` 车辆 API）。
+
+## 构建与测试（未配置 CI）
+
+dominionsword 主模组 jar 不公开，仓库不配置 CI；发布前按以下步骤做一次干净全量构建：
+
+1. 在全新或清空本机 Gradle 缓存的目录中检出代码。
+2. 准备 `dominionsword-1.27.0.jar`、`IceAndFireCE-1.2.7-1.20.1-forge.jar`、`uranus-2.2.6-bugfix.2-1.20.1-forge.jar`。
+3. 执行 `.\gradlew.bat clean build -Pdominionsword_jar=... -Piaf_jar=... -Puranus_jar=...`。
+4. `:test` 任务（JUnit 5）应全部通过，`reobfJar` 产出 `build/libs/dominionsword_iceandfire_compat-1.0.1.jar`。

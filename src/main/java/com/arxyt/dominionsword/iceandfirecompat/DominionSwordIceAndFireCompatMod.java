@@ -6,6 +6,7 @@ import com.arxyt.dominionsword.iceandfirecompat.control.DragonAutopilot;
 import com.arxyt.dominionsword.iceandfirecompat.control.DragonControlModeSource;
 import com.arxyt.dominionsword.iceandfirecompat.control.DragonControlPolicy;
 import com.arxyt.dominionsword.iceandfirecompat.control.DragonRideState;
+import com.arxyt.dominionsword.iceandfirecompat.control.DragonRiderSync;
 import com.iafenvoy.iceandfire.entity.EntityDragonBase;
 import com.mojang.logging.LogUtils;
 import net.minecraft.server.level.ServerLevel;
@@ -42,9 +43,13 @@ public final class DominionSwordIceAndFireCompatMod {
             LOGGER.warn("[DominionSword Ice And Fire Compat] iceandfire is not loaded; dragon bridge disabled.");
             return;
         }
+        DragonRiderSync.ensureLoaded();
         event.enqueueWork(() -> {
             DominionControlApi.registerVehicleAdapter(new IceAndFireDragonVehicleAdapter());
-            LOGGER.info("[DominionSword Ice And Fire Compat] dragon vehicle bridge enabled.");
+            String iafVersion = ModList.get().getModContainerById("iceandfire")
+                    .map(container -> container.getModInfo().getVersion().toString())
+                    .orElse("unknown");
+            LOGGER.info("[DominionSword Ice And Fire Compat] dragon vehicle bridge enabled; iceandfire version {}", iafVersion);
         });
     }
 
@@ -60,7 +65,13 @@ public final class DominionSwordIceAndFireCompatMod {
         @SubscribeEvent
         public static void onEntityJoin(EntityJoinLevelEvent event) {
             if (event.getLevel().isClientSide()) return;
-            if (!(event.getEntity() instanceof EntityDragonBase dragon) || !DragonRideState.isControlled(dragon)) return;
+            if (!(event.getEntity() instanceof EntityDragonBase dragon)) return;
+            if (DragonRideState.isControlled(dragon)) {
+                UUID rider = DragonRideState.riderId(dragon);
+                if (rider != null) DragonRiderSync.setRiderId(dragon, rider);
+            } else {
+                return;
+            }
             UUID owner = PlayerControl.controller(dragon);
             boolean validOwner = false;
             if (owner != null && event.getLevel() instanceof ServerLevel level) {

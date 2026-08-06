@@ -1,6 +1,7 @@
 package com.arxyt.dominionsword.iceandfirecompat.mixin;
 
 import com.arxyt.dominionsword.iceandfirecompat.control.DragonRideState;
+import com.arxyt.dominionsword.iceandfirecompat.control.DragonRiderSync;
 import com.iafenvoy.iceandfire.entity.EntityDragonBase;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.Mob;
@@ -21,9 +22,26 @@ import java.util.UUID;
  *   <li>Controlled dragons never trigger their native random takeoff.</li>
  *   <li>Controlled dragons only accept the commander's commanded target.</li>
  * </ul>
+ *
+ * <p>Method names below are the official mappings and their SRG counterparts verified against the
+ * released Ice And Fire CE 1.2.7 Forge jar; both are listed so the mixin applies in dev and in the
+ * reobfuscated production jar.
  */
 @Mixin(EntityDragonBase.class)
 public abstract class EntityDragonBaseMixin {
+    @Inject(
+            method = {
+                    "defineSynchedData()V",
+                    "m_8097_()V"
+            },
+            at = @At("TAIL"),
+            remap = false
+    )
+    private void dominionsword$registerRiderSyncData(CallbackInfo ci) {
+        EntityDragonBase dragon = (EntityDragonBase) (Object) this;
+        DragonRiderSync.defineData(dragon.getEntityData());
+    }
+
     @Inject(
             method = {
                     "updatePassengerPosition(Lnet/minecraft/world/entity/Entity;Lnet/minecraft/world/entity/Entity$MoveFunction;)V",
