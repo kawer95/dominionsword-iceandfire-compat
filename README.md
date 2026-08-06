@@ -4,7 +4,7 @@ Ice And Fire CE（1.2.7）的龙通过 `DominionVehicleAdapter` 接入 Dominion 
 
 仓库：https://github.com/kawer95/dominionsword-iceandfire-compat
 
-要求：Forge 1.20.1、Dominion Sword 1.27.0+、Ice And Fire CE 1.2.7（Forge）、Uranus 2.x。
+要求：Forge 1.20.1、Dominion Sword 1.28.0+、Ice And Fire CE 1.2.7（Forge）、Uranus 2.x。
 
 ## 构建
 
@@ -31,4 +31,8 @@ dominionsword 主模组 jar 不公开，仓库不配置 CI；发布前按以下�
 1. 在全新或清空本机 Gradle 缓存的目录中检出代码。
 2. 准备 `dominionsword-1.27.0.jar`、`IceAndFireCE-1.2.7-1.20.1-forge.jar`、`uranus-2.2.6-bugfix.2-1.20.1-forge.jar`。
 3. 执行 `.\gradlew.bat clean build -Pdominionsword_jar=... -Piaf_jar=... -Puranus_jar=...`。
-4. `:test` 任务（JUnit 5）应全部通过，`reobfJar` 产出 `build/libs/dominionsword_iceandfire_compat-1.0.1.jar`。
+4. `:test` 任务（JUnit 5）应全部通过，`reobfJar` 产出 `build/libs/dominionsword_iceandfire_compat-1.1.0.jar`。
+
+## 技能
+
+普通攻击默认进入悬停龙息；`orbit_breath`（盘旋持续 AOE）与 `strafe_breath`（掠袭单次 AOE，冷却 900 tick）通过技能栏释放，需要在 Dominion Sword 1.28.0+ 下使用。

@@ -1,6 +1,7 @@
 package com.arxyt.dominionsword.iceandfirecompat;
 
 import com.arxyt.dominionsword.api.DominionControlApi;
+import com.arxyt.dominionsword.api.DominionSkills;
 import com.arxyt.dominionsword.control.PlayerControl;
 import com.arxyt.dominionsword.iceandfirecompat.control.DragonAutopilot;
 import com.arxyt.dominionsword.iceandfirecompat.control.DragonControlModeSource;
@@ -46,6 +47,7 @@ public final class DominionSwordIceAndFireCompatMod {
         DragonRiderSync.ensureLoaded();
         event.enqueueWork(() -> {
             DominionControlApi.registerVehicleAdapter(new IceAndFireDragonVehicleAdapter());
+            DominionSkills.register(new IceAndFireDragonSkillProvider());
             String iafVersion = ModList.get().getModContainerById("iceandfire")
                     .map(container -> container.getModInfo().getVersion().toString())
                     .orElse("unknown");

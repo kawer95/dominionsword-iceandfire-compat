@@ -16,6 +16,16 @@ public final class DragonMoveMath {
     public static final double TOP_RESERVE = 16.0D;
     public static final double BOTTOM_RESERVE = 8.0D;
     public static final double CRUISE_FLOOR_BELOW_DRAGON = 4.0D;
+    public static final double CRUISE_SPEED = 0.8D;
+    public static final double COMBAT_SPEED = 0.55D;
+    public static final double STRAFE_SPEED = 1.1D;
+    public static final double HOVER_SPEED = 0.05D;
+    public static final double ACCELERATION = 0.06D;
+    public static final double BRAKE_DECELERATION = 0.10D;
+    public static final double YAW_BASE = 6.0D;
+    public static final double YAW_MIN = 3.0D;
+    public static final double PITCH_RATE = 3.0D;
+    public static final double PITCH_LIMIT = 35.0D;
 
     public enum FlightAction {
         GROUND,
@@ -74,5 +84,55 @@ public final class DragonMoveMath {
         if (phase == DragonRideState.Phase.LANDING && !onGround) return FlightAction.LANDING;
         if (auto && shouldTakeoff(horizontal, vertical)) return FlightAction.TAKEOFF;
         return FlightAction.GROUND;
+    }
+
+    public static double yawRate(int dragonStage) {
+        return Math.max(YAW_MIN, YAW_BASE - 0.5D * dragonStage);
+    }
+
+    public static double approach(double current, double target, double step) {
+        if (current < target) return Math.min(target, current + step);
+        return Math.max(target, current - step);
+    }
+
+    public static double wrapDegrees(double value) {
+        double wrapped = value % 360.0D;
+        if (wrapped >= 180.0D) wrapped -= 360.0D;
+        if (wrapped < -180.0D) wrapped += 360.0D;
+        return wrapped;
+    }
+
+    public static double approachDegrees(double current, double target, double step) {
+        double delta = wrapDegrees(target - current);
+        return wrapDegrees(current + Math.max(-step, Math.min(step, delta)));
+    }
+
+    /** Minecraft yaw for a horizontal direction vector. */
+    public static double headingTo(Vec3 from, Vec3 to) {
+        double dx = to.x - from.x;
+        double dz = to.z - from.z;
+        return Math.toDegrees(Math.atan2(-dx, dz));
+    }
+
+    public static double pitchTo(Vec3 dir) {
+        double horizontal = Math.hypot(dir.x, dir.z);
+        return Math.toDegrees(Math.atan2(-dir.y, Math.max(1.0E-4D, horizontal)));
+    }
+
+    public static double clampPitch(double pitch) {
+        return Math.max(-PITCH_LIMIT, Math.min(PITCH_LIMIT, pitch));
+    }
+
+    public static Vec3 clampSpeed(Vec3 velocity, double maxSpeed) {
+        double length = velocity.length();
+        if (length <= maxSpeed || length <= 1.0E-6D) return velocity;
+        return velocity.scale(maxSpeed / length);
+    }
+
+    /** Error-damped hover velocity (PD style) toward a desired point. */
+    public static Vec3 dampedHover(Vec3 current, Vec3 desired, Vec3 currentVelocity, double maxSpeed) {
+        Vec3 positionError = desired.subtract(current);
+        Vec3 velocity = positionError.scale(0.08D).subtract(currentVelocity.scale(0.35D));
+        return clampSpeed(velocity, maxSpeed);
     }
 }

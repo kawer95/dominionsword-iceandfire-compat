@@ -52,6 +52,26 @@ class DragonRideStateCodecTest {
         assertFalse(state.contains("phase"));
     }
 
+    @Test
+    void missionStateRoundTripAndCleanup() {
+        CompoundTag state = new CompoundTag();
+        state.putString("mission", "ORBIT");
+        DragonRideState.writeVec3(state, "task", new Vec3(10.0D, 20.0D, 30.0D));
+        state.putDouble("aoe_radius", 24.0D);
+        state.putDouble("aoe_half_height", 16.0D);
+        state.putLong("strafe_ready", 12345L);
+
+        assertEquals(DragonRideState.Mission.ORBIT, DragonRideState.Mission.valueOf(state.getString("mission")));
+        Vec3 task = DragonRideState.readVec3(state, "task");
+        assertEquals(10.0D, task.x, 1.0E-6D);
+
+        DragonRideState.clearStateFields(state, false);
+        assertFalse(state.contains("task_x"));
+        assertFalse(state.contains("mission"));
+        assertFalse(state.contains("aoe_radius"));
+        assertFalse(state.contains("strafe_ready"));
+    }
+
     private static CompoundTag populatedState() {
         CompoundTag state = new CompoundTag();
         state.putBoolean("controlled", true);

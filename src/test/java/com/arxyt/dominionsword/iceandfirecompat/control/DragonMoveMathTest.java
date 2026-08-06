@@ -68,4 +68,28 @@ class DragonMoveMathTest {
         assertEquals(DragonMoveMath.FlightAction.LANDING,
                 DragonMoveMath.decideGrounded(10.0D, 0.0D, false, DragonRideState.Phase.LANDING, false));
     }
+
+    @Test
+    void yawRateShrinksWithStageAndNeverBelowMinimum() {
+        assertEquals(6.0D, DragonMoveMath.yawRate(0), 1.0E-6D);
+        assertEquals(3.0D, DragonMoveMath.yawRate(6), 1.0E-6D);
+        assertEquals(3.0D, DragonMoveMath.yawRate(12), 1.0E-6D);
+    }
+
+    @Test
+    void angleApproachIsBoundedAndWraps() {
+        assertEquals(10.0D, DragonMoveMath.approachDegrees(0.0D, 20.0D, 10.0D), 1.0E-6D);
+        assertEquals(-175.0D, DragonMoveMath.approachDegrees(175.0D, -175.0D, 10.0D), 1.0E-6D);
+        assertEquals(0.0D, DragonMoveMath.wrapDegrees(360.0D), 1.0E-6D);
+    }
+
+    @Test
+    void hoverDampingAndSpeedClampStayBounded() {
+        Vec3 clamped = DragonMoveMath.clampSpeed(new Vec3(3.0D, 0.0D, 0.0D), 0.8D);
+        assertEquals(0.8D, clamped.length(), 1.0E-6D);
+        Vec3 hover = DragonMoveMath.dampedHover(new Vec3(0.0D, 0.0D, 0.0D), new Vec3(5.0D, 0.0D, 0.0D),
+                Vec3.ZERO, DragonMoveMath.COMBAT_SPEED);
+        assertTrue(hover.length() <= DragonMoveMath.COMBAT_SPEED + 1.0E-6D);
+        assertEquals(-35.0D, DragonMoveMath.clampPitch(-90.0D), 1.0E-6D);
+    }
 }

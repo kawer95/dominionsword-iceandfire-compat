@@ -45,12 +45,28 @@ public final class DragonRideState {
     private static final String PREV_COMMAND = "prev_command";
     private static final String PATH_ATTEMPT_TICK = "path_tick";
     private static final String PATH_FAILS = "path_fails";
+    private static final String MISSION = "mission";
+    private static final String TASK = "task";
+    private static final String AOE_RADIUS = "aoe_radius";
+    private static final String AOE_HALF_HEIGHT = "aoe_half_height";
+    private static final String STRAFE_READY = "strafe_ready";
 
     public enum Phase {
         GROUND,
         TAKEOFF,
         CRUISE,
         LANDING
+    }
+
+    /** Persistent mission intent; the autopilot maps each mode to a flight behaviour. */
+    public enum Mission {
+        TRANSIT,
+        HOVER_ATTACK,
+        ORBIT,
+        STRAFE_APPROACH,
+        STRAFE_RUN,
+        STRAFE_EGRESS,
+        EMERGENCY_HOVER
     }
 
     private DragonRideState() {
@@ -235,6 +251,59 @@ public final class DragonRideState {
         if (dragon != null) clearPathBackoff(state(dragon));
     }
 
+    public static Mission mission(EntityDragonBase dragon) {
+        if (dragon == null) return Mission.TRANSIT;
+        String name = state(dragon).getString(MISSION);
+        if (name.isEmpty()) return Mission.TRANSIT;
+        try {
+            return Mission.valueOf(name);
+        } catch (IllegalArgumentException ignored) {
+            return Mission.TRANSIT;
+        }
+    }
+
+    public static void setMission(EntityDragonBase dragon, Mission mission) {
+        if (dragon != null) state(dragon).putString(MISSION, mission == null ? Mission.TRANSIT.name() : mission.name());
+    }
+
+    public static boolean hasTask(EntityDragonBase dragon) {
+        return dragon != null && state(dragon).contains(TASK + "_x");
+    }
+
+    public static Vec3 task(EntityDragonBase dragon) {
+        return readVec3(state(dragon), TASK);
+    }
+
+    public static void setTask(EntityDragonBase dragon, Vec3 task) {
+        if (dragon != null) writeVec3(state(dragon), TASK, task);
+    }
+
+    public static void clearTask(EntityDragonBase dragon) {
+        if (dragon != null) clearVec3(state(dragon), TASK);
+    }
+
+    public static double aoeRadius(EntityDragonBase dragon) {
+        return dragon != null ? state(dragon).getDouble(AOE_RADIUS) : 0.0D;
+    }
+
+    public static double aoeHalfHeight(EntityDragonBase dragon) {
+        return dragon != null ? state(dragon).getDouble(AOE_HALF_HEIGHT) : 0.0D;
+    }
+
+    public static void setAoeSpec(EntityDragonBase dragon, double radius, double halfHeight) {
+        if (dragon == null) return;
+        state(dragon).putDouble(AOE_RADIUS, Math.max(1.0D, Math.min(64.0D, radius)));
+        state(dragon).putDouble(AOE_HALF_HEIGHT, Math.max(1.0D, Math.min(64.0D, halfHeight)));
+    }
+
+    public static long strafeReadyTick(EntityDragonBase dragon) {
+        return dragon != null ? state(dragon).getLong(STRAFE_READY) : 0L;
+    }
+
+    public static void setStrafeReadyTick(EntityDragonBase dragon, long tick) {
+        if (dragon != null) state(dragon).putLong(STRAFE_READY, tick);
+    }
+
     /**
      * Single cleanup entry point for control end.
      *
@@ -254,7 +323,12 @@ public final class DragonRideState {
         if (!keepOfflineTask) {
             clearVec3(state, GOAL);
             clearVec3(state, LANDING);
+            clearVec3(state, TASK);
             state.remove(ATTACK_TARGET);
+            state.remove(MISSION);
+            state.remove(AOE_RADIUS);
+            state.remove(AOE_HALF_HEIGHT);
+            state.remove(STRAFE_READY);
         }
         state.remove(LANDING_COOLDOWN);
         clearPathBackoff(state);

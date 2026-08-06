@@ -72,6 +72,18 @@ public abstract class EntityDragonBaseMixin {
         if (DragonRideState.isControlled(dragon)) cir.setReturnValue(false);
     }
 
+    @Inject(method = "doesWantToLand", at = @At("HEAD"), remap = false, cancellable = true)
+    private void dominionsword$blockNativeLanding(CallbackInfoReturnable<Boolean> cir) {
+        EntityDragonBase dragon = (EntityDragonBase) (Object) this;
+        if (DragonRideState.isControlled(dragon)) cir.setReturnValue(false);
+    }
+
+    @Inject(method = "breakBlocks(Z)V", at = @At("HEAD"), remap = false, cancellable = true)
+    private void dominionsword$blockTerrainBreaking(boolean force, CallbackInfo ci) {
+        EntityDragonBase dragon = (EntityDragonBase) (Object) this;
+        if (DragonRideState.isControlled(dragon)) ci.cancel();
+    }
+
     @Inject(
             method = {
                     "setTarget(Lnet/minecraft/world/entity/LivingEntity;)V",

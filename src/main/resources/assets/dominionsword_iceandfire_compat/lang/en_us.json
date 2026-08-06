@@ -1,5 +1,7 @@
 {
   "action.dominionsword_iceandfire_compat.takeoff": "Takeoff",
   "action.dominionsword_iceandfire_compat.land": "Land",
-  "action.dominionsword_iceandfire_compat.auto_control": "Auto Control"
+  "action.dominionsword_iceandfire_compat.auto_control": "Auto Control",
+  "skill.dominionsword_iceandfire_compat.orbit_breath": "Orbit Breath",
+  "skill.dominionsword_iceandfire_compat.strafe_breath": "Strafe Breath"
 }

@@ -124,10 +124,9 @@ public final class IceAndFireDragonVehicleAdapter implements DominionVehicleAdap
     public boolean move(ServerPlayer player, Entity vehicle, Vec3 target) {
         if (!(vehicle instanceof EntityDragonBase dragon) || !valid(dragon) || target == null) return false;
         if (player != null && !DragonControlPolicy.allows(player, dragon)) return false;
-        DragonAutopilot.updateGoal(dragon, target);
-        if (player == null) {
-            // Offline persistent-task pulse: this is the only driver while the commander is offline.
-            DragonAutopilot.stepMove(dragon, DragonRideState.goal(dragon));
+        DragonAutopilot.updateTask(dragon, target);
+        if (dragon.onGround() && !dragon.isFlying() && DragonRideState.hasTask(dragon) && dragon.hasFlightClearance()) {
+            DragonAutopilot.beginTakeoff(dragon);
         }
         return true;
     }
@@ -143,7 +142,11 @@ public final class IceAndFireDragonVehicleAdapter implements DominionVehicleAdap
             return true;
         }
         DragonRideState.setAttackTarget(dragon, target.getUUID());
+        DragonRideState.setMission(dragon, DragonRideState.Mission.HOVER_ATTACK);
         dragon.setTarget(target);
+        if (dragon.onGround() && !dragon.isFlying() && dragon.hasFlightClearance()) {
+            DragonAutopilot.beginTakeoff(dragon);
+        }
         return true;
     }
 

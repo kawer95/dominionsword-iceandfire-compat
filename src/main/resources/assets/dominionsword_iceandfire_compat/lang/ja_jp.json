@@ -1,5 +1,7 @@
 {
   "action.dominionsword_iceandfire_compat.takeoff": "離陸",
   "action.dominionsword_iceandfire_compat.land": "着陸",
-  "action.dominionsword_iceandfire_compat.auto_control": "自動操縦"
+  "action.dominionsword_iceandfire_compat.auto_control": "自動操縦",
+  "skill.dominionsword_iceandfire_compat.orbit_breath": "旋回ブレス",
+  "skill.dominionsword_iceandfire_compat.strafe_breath": "急襲ブレス"
 }

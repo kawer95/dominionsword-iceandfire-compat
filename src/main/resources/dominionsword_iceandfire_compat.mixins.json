@@ -6,6 +6,8 @@
   "refmap": "dominionsword_iceandfire_compat.refmap.json",
   "mixins": [
     "EntityDragonBaseMixin",
+    "IafDragonFlightManagerMixin",
+    "FlightMoveHelperMixin",
     "DragonAIWanderMixin",
     "DragonAIReturnToRoostMixin"
   ]
