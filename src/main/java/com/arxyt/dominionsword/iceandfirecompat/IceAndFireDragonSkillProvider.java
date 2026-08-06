@@ -3,6 +3,7 @@ package com.arxyt.dominionsword.iceandfirecompat;
 import com.arxyt.dominionsword.api.DominionSkillProvider;
 import com.arxyt.dominionsword.control.PlayerControl;
 import com.arxyt.dominionsword.iceandfirecompat.control.DragonAutopilot;
+import com.arxyt.dominionsword.iceandfirecompat.control.DragonControlPolicy;
 import com.arxyt.dominionsword.iceandfirecompat.control.DragonFlightRegistry;
 import com.arxyt.dominionsword.iceandfirecompat.control.DragonRideState;
 import com.iafenvoy.iceandfire.entity.EntityDragonBase;
@@ -54,21 +55,27 @@ public final class IceAndFireDragonSkillProvider implements DominionSkillProvide
     @Override
     public boolean activate(SkillContext context, String skillId) {
         if (!(context.actor() instanceof EntityDragonBase dragon) || context.target() == null
-                || context.target().position() == null || !DragonRideState.isControlled(dragon)) {
+                || context.target().position() == null || !DragonRideState.isControlled(dragon)
+                || context.commander() == null || !DragonControlPolicy.allows(context.commander(), dragon)
+                || !context.commander().getUUID().equals(PlayerControl.controller(dragon))
+                || dragon.level() != context.commander().level()) {
             return false;
         }
         Vec3 center = context.target().position();
+        if (!Double.isFinite(center.x) || !Double.isFinite(center.y) || !Double.isFinite(center.z)) return false;
         ServerPlayer player = context.commander();
         if (ORBIT.equals(skillId)) {
+            if (!PlayerControl.redirectVehicleMove(player, dragon, center)) return false;
             DragonRideState.setMission(dragon, DragonRideState.Mission.ORBIT);
             DragonRideState.setTask(dragon, center);
             DragonRideState.setAoeSpec(dragon, ORBIT_RADIUS, ORBIT_HALF_HEIGHT);
             wakeForMission(dragon);
-            return player != null && PlayerControl.redirectVehicleMove(player, dragon, center);
+            return true;
         }
         if (STRAFE.equals(skillId)) {
             long now = dragon.level().getGameTime();
             if (now < DragonRideState.strafeReadyTick(dragon)) return false;
+            if (!PlayerControl.redirectVehicleMove(player, dragon, center)) return false;
             DragonRideState.setMission(dragon, DragonRideState.Mission.STRAFE_APPROACH);
             DragonRideState.setTask(dragon, center);
             DragonRideState.setAoeSpec(dragon, STRAFE_RADIUS, STRAFE_HALF_HEIGHT);
@@ -77,7 +84,7 @@ public final class IceAndFireDragonSkillProvider implements DominionSkillProvide
             state.strafeStage = 0;
             state.strafeAxis = null;
             wakeForMission(dragon);
-            return player != null && PlayerControl.redirectVehicleMove(player, dragon, center);
+            return true;
         }
         return false;
     }

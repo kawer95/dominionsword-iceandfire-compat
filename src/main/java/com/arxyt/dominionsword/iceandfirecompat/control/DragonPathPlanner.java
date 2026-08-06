@@ -17,188 +17,167 @@ import java.util.Map;
 import java.util.PriorityQueue;
 import java.util.Set;
 
-/**
- * Coarse 3D A* on a dragon-sized grid. Occupancy is cached per cell and only the final path and
- * guidance corridors use full-AABB checks, keeping node expansion within a hard budget.
- */
+/** Incremental, server-thread-only coarse 3D A*. */
 public final class DragonPathPlanner {
-    public static final int MAX_EXPANSIONS = 1024;
-    private static final int NEIGHBOR_OFFSETS = 26;
+    public static final int GLOBAL_EXPANSIONS_PER_TICK = 1024;
+    public static final int PER_DRAGON_EXPANSIONS_PER_TICK = 128;
+    public static final int MAX_EXPANSIONS_PER_JOB = 4096;
+    private static final int MAX_OCCUPANCY = 8192;
+    private static final long TIME_BUDGET_NANOS = 3_000_000L;
     private static final int[][] OFFSETS = offsets();
+    private static int remainingExpansions;
+    private static long deadlineNanos;
 
-    private DragonPathPlanner() {
+    private DragonPathPlanner() {}
+
+    public record Cell(int x, int y, int z) {}
+
+    public static void beginServerTick() {
+        remainingExpansions = GLOBAL_EXPANSIONS_PER_TICK;
+        deadlineNanos = System.nanoTime() + TIME_BUDGET_NANOS;
     }
 
-    public static List<Vec3> plan(EntityDragonBase dragon, Vec3 goal, DragonFlightRegistry.RuntimeState state) {
-        if (dragon == null || goal == null || dragon.level() == null || dragon.level().isClientSide()) {
-            return List.of();
-        }
+    public static Job create(EntityDragonBase dragon, Vec3 goal) {
+        if (dragon == null || goal == null || dragon.level().isClientSide() || !finite(goal)) return null;
         Level level = dragon.level();
-        double cellXZ = Math.max(4.0D, Math.ceil(dragon.getBbWidth()));
-        double cellY = Math.max(4.0D, Math.ceil(dragon.getBbHeight()));
-        int startX = toCell(dragon.getX(), cellXZ);
-        int startY = toCell(dragon.getY(), cellY);
-        int startZ = toCell(dragon.getZ(), cellXZ);
-        int goalX = toCell(goal.x, cellXZ);
-        int goalY = toCell(goal.y, cellY);
-        int goalZ = toCell(goal.z, cellXZ);
-        if (startX == goalX && startY == goalY && startZ == goalZ) {
-            return List.of(goal);
-        }
+        double cellXZ = Math.max(4.0D, Math.ceil(dragon.getBbWidth() + 1.0D));
+        double cellY = Math.max(4.0D, Math.ceil(dragon.getBbHeight() + 1.0D));
+        Cell start = toCell(dragon.position(), cellXZ, cellY);
+        Cell end = toCell(goal, cellXZ, cellY);
+        return new Job(start, end, cellXZ, cellY, goal);
+    }
 
-        long startKey = key(startX, startY, startZ);
-        long goalKey = key(goalX, goalY, goalZ);
-        PriorityQueue<Node> open = new PriorityQueue<>(Comparator.comparingDouble(node -> node.f));
-        Map<Long, Double> gScore = new HashMap<>();
-        Map<Long, Long> cameFrom = new HashMap<>();
-        Set<Long> closed = new HashSet<>();
-        gScore.put(startKey, 0.0D);
-        open.add(new Node(startKey, heuristic(startX, startY, startZ, goalX, goalY, goalZ)));
-        int expansions = 0;
-
-        while (!open.isEmpty() && expansions < MAX_EXPANSIONS) {
-            Node current = open.poll();
-            if (!closed.add(current.key)) continue;
-            expansions++;
-            if (current.key == goalKey) {
-                return smooth(dragon, level, reconstruct(cameFrom, current.key, startKey, cellXZ, cellY));
+    /** Advances one job without allocating a new search. Returns a completed safe path, empty on failure, null while pending. */
+    public static List<Vec3> advance(EntityDragonBase dragon, Job job) {
+        if (dragon == null || job == null || job.finished) return job == null ? List.of() : job.result;
+        if (remainingExpansions <= 0 || System.nanoTime() >= deadlineNanos) return null;
+        Level level = dragon.level();
+        int local = 0;
+        while (!job.open.isEmpty() && local < PER_DRAGON_EXPANSIONS_PER_TICK
+                && job.expansions < MAX_EXPANSIONS_PER_JOB && remainingExpansions > 0
+                && System.nanoTime() < deadlineNanos) {
+            Node current = job.open.poll();
+            if (!job.closed.add(current.cell)) continue;
+            job.expansions++;
+            local++;
+            remainingExpansions--;
+            if (current.cell.equals(job.goal)) {
+                job.finished = true;
+                job.result = reconstruct(job, current.cell);
+                return job.result;
             }
-            int cx = xOf(current.key);
-            int cy = yOf(current.key);
-            int cz = zOf(current.key);
-            double currentG = gScore.getOrDefault(current.key, Double.MAX_VALUE);
+            double currentG = job.gScore.getOrDefault(current.cell, Double.POSITIVE_INFINITY);
             for (int[] offset : OFFSETS) {
-                int nx = cx + offset[0];
-                int ny = cy + offset[1];
-                int nz = cz + offset[2];
-                if (ny < level.getMinBuildHeight() || ny > level.getMaxBuildHeight()) continue;
-                long nextKey = key(nx, ny, nz);
-                if (!isOpen(dragon, level, cellXZ, cellY, nx, ny, nz, state)) continue;
-                double stepCost = 1.0D + Math.abs(offset[1]) * 2.0D;
-                double tentative = currentG + stepCost;
-                if (tentative < gScore.getOrDefault(nextKey, Double.MAX_VALUE)) {
-                    gScore.put(nextKey, tentative);
-                    cameFrom.put(nextKey, current.key);
-                    open.add(new Node(nextKey, tentative + heuristic(nx, ny, nz, goalX, goalY, goalZ)));
+                Cell next = new Cell(current.cell.x + offset[0], current.cell.y + offset[1], current.cell.z + offset[2]);
+                if (!open(dragon, level, job, next)) continue;
+                double horizontal = Math.hypot(offset[0], offset[2]);
+                double step = Math.sqrt(horizontal * horizontal + offset[1] * offset[1]) + Math.abs(offset[1]) * 1.25D;
+                double tentative = currentG + step;
+                if (tentative < job.gScore.getOrDefault(next, Double.POSITIVE_INFINITY)) {
+                    job.gScore.put(next, tentative);
+                    job.cameFrom.put(next, current.cell);
+                    job.open.add(new Node(next, tentative + heuristic(next, job.goal)));
                 }
             }
         }
-        state.emergencyTicks = Math.min(1000, state.emergencyTicks + 1);
-        return List.of();
+        if (job.open.isEmpty() || job.expansions >= MAX_EXPANSIONS_PER_JOB) {
+            job.finished = true;
+            job.result = List.of();
+            return job.result;
+        }
+        return null;
     }
 
-    private static List<Vec3> reconstruct(Map<Long, Long> cameFrom, long goalKey, long startKey,
-                                           double cellXZ, double cellY) {
-        Deque<Long> chain = new ArrayDeque<>();
-        long cursor = goalKey;
-        while (cursor != startKey) {
-            chain.addFirst(cursor);
-            Long previous = cameFrom.get(cursor);
-            if (previous == null) break;
-            cursor = previous;
+    public static final class Job {
+        final Cell start;
+        final Cell goal;
+        final double cellXZ;
+        final double cellY;
+        final Vec3 requestedGoal;
+        final PriorityQueue<Node> open = new PriorityQueue<>(Comparator.comparingDouble(Node::f));
+        final Map<Cell, Double> gScore = new HashMap<>();
+        final Map<Cell, Cell> cameFrom = new HashMap<>();
+        final Set<Cell> closed = new HashSet<>();
+        final Map<Cell, Boolean> occupancy = new HashMap<>();
+        int expansions;
+        boolean finished;
+        List<Vec3> result;
+
+        Job(Cell start, Cell goal, double cellXZ, double cellY, Vec3 requestedGoal) {
+            this.start = start;
+            this.goal = goal;
+            this.cellXZ = cellXZ;
+            this.cellY = cellY;
+            this.requestedGoal = requestedGoal;
+            gScore.put(start, 0.0D);
+            open.add(new Node(start, heuristic(start, goal)));
         }
-        List<Vec3> points = new ArrayList<>();
-        points.add(centerOf(startKey, cellXZ, cellY));
-        for (long key : chain) points.add(centerOf(key, cellXZ, cellY));
-        return points;
     }
 
-    private static List<Vec3> smooth(EntityDragonBase dragon, Level level, List<Vec3> raw) {
-        if (raw.size() <= 2) return raw;
-        List<Vec3> result = new ArrayList<>();
-        result.add(raw.get(0));
-        int cursor = 0;
-        while (cursor < raw.size() - 1) {
-            int far = raw.size() - 1;
-            while (far > cursor + 1 && !segmentClear(dragon, level, raw.get(cursor), raw.get(far))) {
-                far--;
-            }
-            result.add(raw.get(far));
-            cursor = far;
-        }
+    private static boolean open(EntityDragonBase dragon, Level level, Job job, Cell cell) {
+        Boolean cached = job.occupancy.get(cell);
+        if (cached != null) return cached;
+        Vec3 center = center(cell, job.cellXZ, job.cellY);
+        AABB box = boxAt(dragon, center);
+        boolean result = finite(center)
+                && center.y >= level.getMinBuildHeight() && center.y <= level.getMaxBuildHeight() - 1
+                && level.getWorldBorder().isWithinBounds(BlockPos.containing(center))
+                && allChunksLoaded(level, box)
+                && level.noCollision(dragon, box);
+        if (job.occupancy.size() < MAX_OCCUPANCY) job.occupancy.put(cell, result);
         return result;
     }
 
-    private static boolean segmentClear(EntityDragonBase dragon, Level level, Vec3 a, Vec3 b) {
-        double length = a.distanceTo(b);
-        int steps = Math.max(1, (int) Math.ceil(length));
-        for (int i = 1; i <= steps; i++) {
-            Vec3 point = a.lerp(b, i / (double) steps);
-            if (!noCollision(dragon, level, boxAt(dragon, point))) return false;
+    private static boolean allChunksLoaded(Level level, AABB box) {
+        BlockPos min = BlockPos.containing(box.minX, box.minY, box.minZ);
+        BlockPos max = BlockPos.containing(box.maxX, box.maxY, box.maxZ);
+        return level.hasChunksAt(min, max);
+    }
+
+    private static List<Vec3> reconstruct(Job job, Cell end) {
+        Deque<Cell> cells = new ArrayDeque<>();
+        Cell cursor = end;
+        while (cursor != null && !cursor.equals(job.start)) {
+            cells.addFirst(cursor);
+            cursor = job.cameFrom.get(cursor);
         }
-        return true;
+        List<Vec3> path = new ArrayList<>(cells.size() + 1);
+        path.add(center(job.start, job.cellXZ, job.cellY));
+        for (Cell cell : cells) path.add(center(cell, job.cellXZ, job.cellY));
+        if (path.isEmpty()) return List.of();
+        return List.copyOf(path);
     }
 
-    private static boolean isOpen(EntityDragonBase dragon, Level level, double cellXZ, double cellY,
-                                 int x, int y, int z, DragonFlightRegistry.RuntimeState state) {
-        long key = key(x, y, z);
-        Boolean cached = state.occupancy.get(key);
-        if (cached != null) return cached;
-        Vec3 center = new Vec3((x + 0.5D) * cellXZ, (y + 0.5D) * cellY, (z + 0.5D) * cellXZ);
-        BlockPos corner = BlockPos.containing(center);
-        boolean open = level.hasChunkAt(corner.getX(), corner.getZ())
-                && level.hasChunkAt(corner.getX() + (int) Math.ceil(cellXZ), corner.getZ() + (int) Math.ceil(cellXZ))
-                && noCollision(dragon, level, boxAt(dragon, center));
-        state.occupancy.put(key, open);
-        return open;
+    private static Cell toCell(Vec3 value, double cellXZ, double cellY) {
+        return new Cell((int) Math.floor(value.x / cellXZ), (int) Math.floor(value.y / cellY),
+                (int) Math.floor(value.z / cellXZ));
     }
 
-    private static boolean noCollision(EntityDragonBase dragon, Level level, AABB box) {
-        return level.noCollision(dragon, box);
+    private static Vec3 center(Cell cell, double cellXZ, double cellY) {
+        return new Vec3((cell.x + 0.5D) * cellXZ, (cell.y + 0.5D) * cellY, (cell.z + 0.5D) * cellXZ);
     }
 
-    private static AABB boxAt(EntityDragonBase dragon, Vec3 center) {
-        AABB box = dragon.getBoundingBox();
-        return box.move(center.x - dragon.getX(), center.y - dragon.getY(), center.z - dragon.getZ());
+    private static AABB boxAt(EntityDragonBase dragon, Vec3 point) {
+        return dragon.getBoundingBox().move(point.x - dragon.getX(), point.y - dragon.getY(), point.z - dragon.getZ());
     }
 
-    private static Vec3 centerOf(long key, double cellXZ, double cellY) {
-        return new Vec3((xOf(key) + 0.5D) * cellXZ, (yOf(key) + 0.5D) * cellY, (zOf(key) + 0.5D) * cellXZ);
+    private static double heuristic(Cell a, Cell b) {
+        double dx = (double) a.x - b.x;
+        double dy = (double) a.y - b.y;
+        double dz = (double) a.z - b.z;
+        return Math.sqrt(dx * dx + dy * dy + dz * dz);
     }
 
-    private static int toCell(double value, double cell) {
-        return (int) Math.floor(value / cell);
-    }
-
-    private static long key(int x, int y, int z) {
-        return ((long) (x & 0x1FFFFF) << 42) | ((long) (y & 0x1FFFFF) << 21) | (long) (z & 0x1FFFFF);
-    }
-
-    private static int xOf(long key) {
-        return unpackSigned(key, 42);
-    }
-
-    private static int yOf(long key) {
-        return unpackSigned(key, 21);
-    }
-
-    private static int zOf(long key) {
-        return unpackSigned(key, 0);
-    }
-
-    private static int unpackSigned(long key, int shift) {
-        long bits = (key >>> shift) & 0x1FFFFFL;
-        if ((bits & 0x100000L) != 0) bits -= 0x200000L;
-        return (int) bits;
-    }
-
-    private static double heuristic(int x, int y, int z, int gx, int gy, int gz) {
-        return Math.sqrt((x - gx) * (x - gx) + (y - gy) * (y - gy) + (z - gz) * (z - gz));
+    private static boolean finite(Vec3 value) {
+        return Double.isFinite(value.x) && Double.isFinite(value.y) && Double.isFinite(value.z);
     }
 
     private static int[][] offsets() {
-        List<int[]> list = new ArrayList<>();
-        for (int dx = -1; dx <= 1; dx++) {
-            for (int dy = -1; dy <= 1; dy++) {
-                for (int dz = -1; dz <= 1; dz++) {
-                    if (dx == 0 && dy == 0 && dz == 0) continue;
-                    list.add(new int[]{dx, dy, dz});
-                }
-            }
-        }
-        return list.toArray(new int[0][]);
+        List<int[]> result = new ArrayList<>();
+        for (int x = -1; x <= 1; x++) for (int y = -1; y <= 1; y++) for (int z = -1; z <= 1; z++)
+            if (x != 0 || y != 0 || z != 0) result.add(new int[]{x, y, z});
+        return result.toArray(new int[0][]);
     }
 
-    private record Node(long key, double f) {
-    }
+    private record Node(Cell cell, double f) {}
 }

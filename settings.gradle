@@ -1,7 +1,17 @@
 pluginManagement {
     repositories {
         gradlePluginPortal()
-        maven { url = 'https://maven.minecraftforge.net/' }
+        maven {
+            url = 'https://repo.spongepowered.org/repository/maven-public/'
+            content { includeGroupByRegex('org\\.spongepowered(\\..*)?') }
+        }
+        maven {
+            url = 'https://maven.minecraftforge.net/'
+            content {
+                includeGroupByRegex('net\\.minecraftforge(\\..*)?')
+                includeGroup('org.spongepowered')
+            }
+        }
     }
 }
 

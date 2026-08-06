@@ -48,7 +48,8 @@ public final class DragonLandingPlanner {
                     int surfaceY = level.getHeight(Heightmap.Types.MOTION_BLOCKING, cx + dx, cz + dz);
                     budget.reads++;
                     if (surfaceY < minY || surfaceY > maxY) continue;
-                    Vec3 spot = new Vec3(cx + dx + 0.5D, surfaceY + 1.0D, cz + dz + 0.5D);
+                    // getHeight already returns the first non-motion-blocking Y above the surface.
+                    Vec3 spot = new Vec3(cx + dx + 0.5D, surfaceY, cz + dz + 0.5D);
                     BlockPos ground = BlockPos.containing(spot).below();
                     BlockState groundState = level.getBlockState(ground);
                     budget.reads++;
@@ -90,11 +91,26 @@ public final class DragonLandingPlanner {
         for (int y = Math.max(level.getMinBuildHeight(), bottom); y <= top; y++) {
             budget.reads++;
             if (budget.exceeded()) return false;
-            BlockPos pos = new BlockPos(ground.getX(), y, ground.getZ());
-            if (level.getBlockState(pos).getBlock() == Blocks.FIRE) return false;
-            if (!level.getFluidState(pos).isEmpty()) return false;
+            for (int x = (int) Math.floor(moved.minX); x <= (int) Math.floor(moved.maxX); x++) {
+                for (int z = (int) Math.floor(moved.minZ); z <= (int) Math.floor(moved.maxZ); z++) {
+                    budget.reads++;
+                    if (budget.exceeded()) return false;
+                    BlockPos pos = new BlockPos(x, y, z);
+                    if (level.getBlockState(pos).getBlock() == Blocks.FIRE || !level.getFluidState(pos).isEmpty()) return false;
+                }
+            }
         }
-        return true;
+        // A large dragon must not balance on one center block: require center and four footprint corners.
+        return supported(level, ground) && supported(level, new BlockPos((int) Math.floor(moved.minX), ground.getY(), (int) Math.floor(moved.minZ)))
+                && supported(level, new BlockPos((int) Math.floor(moved.maxX), ground.getY(), (int) Math.floor(moved.minZ)))
+                && supported(level, new BlockPos((int) Math.floor(moved.minX), ground.getY(), (int) Math.floor(moved.maxZ)))
+                && supported(level, new BlockPos((int) Math.floor(moved.maxX), ground.getY(), (int) Math.floor(moved.maxZ)));
+    }
+
+    private static boolean supported(Level level, BlockPos pos) {
+        BlockState state = level.getBlockState(pos);
+        return !state.isAir() && !state.canBeReplaced() && !state.getCollisionShape(level, pos).isEmpty()
+                && level.getFluidState(pos).isEmpty() && state.getBlock() != Blocks.FIRE;
     }
 
     private static final class Budget {

@@ -32,14 +32,14 @@ side="BOTH"
 [[dependencies.${mod_id}]]
 modId="dominionsword"
 mandatory=true
-versionRange="[1.28.0,)"
+versionRange="[1.28.1,1.29)"
 ordering="AFTER"
 side="BOTH"
 
 [[dependencies.${mod_id}]]
 modId="iceandfire"
 mandatory=true
-versionRange="[1.2.7,1.3)"
+versionRange="[1.2.7,1.2.8)"
 ordering="AFTER"
 side="BOTH"
 

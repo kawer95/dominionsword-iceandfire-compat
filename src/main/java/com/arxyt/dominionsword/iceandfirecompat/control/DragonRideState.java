@@ -66,6 +66,7 @@ public final class DragonRideState {
         STRAFE_APPROACH,
         STRAFE_RUN,
         STRAFE_EGRESS,
+        AREA_HOLD,
         EMERGENCY_HOVER
     }
 

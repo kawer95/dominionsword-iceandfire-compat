@@ -129,6 +129,36 @@ public final class DragonMoveMath {
         return velocity.scale(maxSpeed / length);
     }
 
+    public static Vec3 normalizeOr(Vec3 value, Vec3 fallback) {
+        if (value != null && value.lengthSqr() > 1.0E-8D) return value.normalize();
+        return fallback != null && fallback.lengthSqr() > 1.0E-8D ? fallback.normalize() : new Vec3(0.0D, 0.0D, 1.0D);
+    }
+
+    /** Rotates a direction by bounded yaw/pitch instead of replacing the velocity heading in one tick. */
+    public static Vec3 turnToward(Vec3 current, Vec3 desired, double maxYawDegrees, double maxPitchDegrees) {
+        Vec3 currentDir = normalizeOr(current, desired);
+        Vec3 desiredDir = normalizeOr(desired, currentDir);
+        double currentYaw = Math.toDegrees(Math.atan2(-currentDir.x, currentDir.z));
+        double desiredYaw = Math.toDegrees(Math.atan2(-desiredDir.x, desiredDir.z));
+        double yaw = approachDegrees(currentYaw, desiredYaw, maxYawDegrees);
+        double currentPitch = pitchTo(currentDir);
+        double desiredPitch = pitchTo(desiredDir);
+        double pitch = approach(currentPitch, desiredPitch, maxPitchDegrees);
+        double yawRad = Math.toRadians(yaw);
+        double pitchRad = Math.toRadians(clampPitch(pitch));
+        double horizontal = Math.cos(pitchRad);
+        return new Vec3(-Math.sin(yawRad) * horizontal, -Math.sin(pitchRad), Math.cos(yawRad) * horizontal);
+    }
+
+    public static double turnLimitedSpeed(double desiredSpeed, Vec3 currentDirection, Vec3 desiredDirection) {
+        if (desiredSpeed <= 0.0D) return 0.0D;
+        Vec3 a = normalizeOr(currentDirection, desiredDirection);
+        Vec3 b = normalizeOr(desiredDirection, currentDirection);
+        double dot = Math.max(-1.0D, Math.min(1.0D, a.dot(b)));
+        double angle = Math.acos(dot);
+        return desiredSpeed * Math.max(0.35D, Math.cos(angle * 0.5D));
+    }
+
     /** Error-damped hover velocity (PD style) toward a desired point. */
     public static Vec3 dampedHover(Vec3 current, Vec3 desired, Vec3 currentVelocity, double maxSpeed) {
         Vec3 positionError = desired.subtract(current);

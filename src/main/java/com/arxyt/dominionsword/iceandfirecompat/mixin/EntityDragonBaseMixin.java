@@ -98,7 +98,6 @@ public abstract class EntityDragonBaseMixin {
         if (!DragonRideState.isControlled(dragon)) return;
         UUID commanded = DragonRideState.attackTarget(dragon);
         if (target == null) {
-            DragonRideState.clearAttackTarget(dragon);
             return;
         }
         if (commanded == null || !commanded.equals(target.getUUID())) ci.cancel();

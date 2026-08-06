@@ -39,6 +39,10 @@ public final class DragonAutopilot {
 
     public static void beginControl(EntityDragonBase dragon) {
         if (dragon == null) return;
+        if (DragonRideState.isControlled(dragon)) {
+            wake(dragon);
+            return;
+        }
         DragonRideState.setPrevCommand(dragon, dragon.getCommand());
         DragonRideState.setControlled(dragon, true);
         DragonRideState.setPhase(dragon, DragonRideState.Phase.GROUND);
@@ -70,6 +74,21 @@ public final class DragonAutopilot {
             dragon.setHovering(true);
             dragon.setFlying(false);
         }
+    }
+
+    /** Non-recoverable cleanup path for death, explicit release, owner changes and invalid permissions. */
+    public static void forceEndControl(EntityDragonBase dragon) {
+        if (dragon == null) return;
+        DragonFlightController.reset(dragon);
+        if (dragon.getTarget() != null) dragon.setTarget(null);
+        Mob rider = DragonRideState.riderEntity(dragon);
+        DragonRideState.clearControlState(dragon, false, false);
+        DragonRideState.clearRiderMarkers(dragon, rider);
+        DragonRideState.setControlled(dragon, false);
+        dragon.setFlying(false);
+        dragon.setHovering(false);
+        dragon.setCommand(DragonRideState.prevCommand(dragon));
+        DragonRideState.setPhase(dragon, DragonRideState.Phase.GROUND);
     }
 
     /**

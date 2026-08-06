@@ -12,295 +12,281 @@ import net.minecraft.world.phys.Vec3;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import java.util.UUID;
 
-/**
- * Airborne flight controller for Dominion-controlled dragons. Runs from the FlightMoveHelper
- * mixin every tick (correct move-control phase), reads the persistent mission, plans paths,
- * steers with look-ahead and writes the final velocity/yaw/pitch. Native hover/random-flight
- * writes are neutralized by mixins while controlled.
- */
+/** Single flight actuator. Behaviours produce intents; this class alone writes airborne velocity. */
 public final class DragonFlightController {
     private static final double HOVER_DISTANCE_BASE = 20.0D;
     private static final double HOVER_HEIGHT_BASE = 10.0D;
     private static final double HOVER_HEIGHT_PER_STAGE = 2.0D;
-    private static final double YAW_ERROR_LIMIT = 25.0D;
-    private static final double ARRIVAL_HORIZONTAL = 3.5D;
-    private static final double ARRIVAL_VERTICAL = 2.5D;
-    private static final double ORBIT_MARGIN = 12.0D;
-    private static final double STRAFE_BEHIND = 24.0D;
-    private static final double STRAFE_EGRESS = 32.0D;
-    private static final double SEPARATION_RADIUS = 12.0D;
     private static final double TAKEOFF_ALTITUDE = 10.0D;
-    private static final long FIRE_INTERVAL_TICKS = 5L;
-    private static final long ORBIT_QUERY_INTERVAL = 10L;
-    private static final int REPLAN_INTERVAL_TICKS = 20;
-    private static final double REPLAN_GOAL_DELTA = 4.0D;
-    private static final double REPLAN_DEVIATION = 8.0D;
+    private static final double SEPARATION_RADIUS = 12.0D;
+    private static final double ARRIVAL_HORIZONTAL = 3.5D;
+    private static final long FIRE_INTERVAL = 5L;
+    private static final long HOSTILE_QUERY_INTERVAL = 10L;
     private static final int EMERGENCY_THRESHOLD = 100;
 
-    private DragonFlightController() {
+    private DragonFlightController() {}
+
+    public static void reset(EntityDragonBase dragon) {
+        DragonFlightRegistry.remove(dragon);
+        if (dragon != null) dragon.setBreathingFire(false);
     }
 
     public static void tick(EntityDragonBase dragon) {
-        if (dragon == null || !DragonRideState.isControlled(dragon)) return;
-        long now = dragon.level().getGameTime();
-        DragonFlightRegistry.prune(now);
+        if (dragon == null || dragon.level().isClientSide() || !DragonRideState.isControlled(dragon)) return;
         DragonFlightRegistry.RuntimeState state = DragonFlightRegistry.state(dragon);
+        long now = dragon.level().getGameTime();
         state.lastTick = now;
-        if (dragon.isModelDead() || !dragon.isAlive() || dragon.isRemoved()) return;
-
-        DragonRideState.Phase phase = DragonRideState.phase(dragon);
-        if (dragon.onGround()) {
-            if (phase == DragonRideState.Phase.LANDING) {
-                dragon.setFlying(false);
-                dragon.setHovering(false);
-                DragonRideState.setPhase(dragon, DragonRideState.Phase.GROUND);
-                if (DragonRideState.hasTask(dragon) && arrived(dragon, DragonRideState.task(dragon))) {
-                    DragonRideState.clearTask(dragon);
-                    DragonRideState.setMission(dragon, DragonRideState.Mission.TRANSIT);
-                }
-                DragonRideState.clearLandingSpot(dragon);
-                return;
-            }
-            if (phase != DragonRideState.Phase.TAKEOFF && !dragon.isFlying() && !dragon.isHovering()) return;
+        if (dragon.isRemoved() || !dragon.isAlive() || dragon.isModelDead()) {
+            DragonAutopilot.forceEndControl(dragon);
+            return;
         }
+        DragonRideState.Phase phase = DragonRideState.phase(dragon);
+        if (dragon.onGround() && phase == DragonRideState.Phase.LANDING) {
+            finishLanding(dragon);
+            return;
+        }
+        if (dragon.onGround() && phase == DragonRideState.Phase.GROUND && !dragon.isFlying() && !dragon.isHovering()) return;
         if (phase == DragonRideState.Phase.TAKEOFF && !dragon.isFlying()) {
             dragon.setFlying(true);
             dragon.setHovering(false);
         }
-
-        Vec3 velocity = dispatch(dragon, state);
-        velocity = velocity.add(separation(dragon));
-        velocity = DragonMoveMath.clampSpeed(velocity, maxSpeed(dragon));
-        applyMotion(dragon, velocity);
-        if (phase != DragonRideState.Phase.LANDING) {
-            DragonRideState.setPhase(dragon, DragonRideState.Phase.CRUISE);
-        }
+        Intent intent = switch (phase) {
+            case TAKEOFF -> takeoff(dragon, state);
+            case LANDING -> landing(dragon, state);
+            default -> behaviour(dragon, state);
+        };
+        applyIntent(dragon, state, intent);
         state.lastPosition = dragon.position();
-        state.emergencyTicks = Math.max(0, state.emergencyTicks - 1);
     }
 
-    private static Vec3 dispatch(EntityDragonBase dragon, DragonFlightRegistry.RuntimeState state) {
-        DragonRideState.Phase phase = DragonRideState.phase(dragon);
-        if (phase == DragonRideState.Phase.TAKEOFF) return takeoff(dragon, state);
-        if (phase == DragonRideState.Phase.LANDING) return landing(dragon, state);
+    private static Intent behaviour(EntityDragonBase dragon, DragonFlightRegistry.RuntimeState state) {
         return switch (DragonRideState.mission(dragon)) {
             case HOVER_ATTACK -> hoverAttack(dragon, state);
             case ORBIT -> orbit(dragon, state);
             case STRAFE_APPROACH, STRAFE_RUN, STRAFE_EGRESS -> strafe(dragon, state);
-            case EMERGENCY_HOVER -> hoverInPlace(dragon, state);
+            case AREA_HOLD, EMERGENCY_HOVER -> areaHold(dragon, state);
             default -> transit(dragon, state);
         };
     }
 
-    private static Vec3 transit(EntityDragonBase dragon, DragonFlightRegistry.RuntimeState state) {
-        if (!DragonRideState.hasTask(dragon)) return hoverInPlace(dragon, state);
-        Vec3 goal = DragonRideState.task(dragon);
-        boolean replan = state.path.isEmpty()
-                || state.lastGoal == null || state.lastGoal.distanceToSqr(goal) > REPLAN_GOAL_DELTA * REPLAN_GOAL_DELTA
-                || (dragon.level().getGameTime() - state.replanTick >= REPLAN_INTERVAL_TICKS
-                    && dragon.position().distanceToSqr(goal) > REPLAN_DEVIATION * REPLAN_DEVIATION);
-        if (replan) {
-            state.lastGoal = goal;
-            state.replanTick = dragon.level().getGameTime();
-            state.path = DragonPathPlanner.plan(dragon, goal, state);
-        }
-        if (state.path.isEmpty()) {
-            state.emergencyTicks++;
-            if (state.emergencyTicks >= EMERGENCY_THRESHOLD) {
-                DragonRideState.setMission(dragon, DragonRideState.Mission.EMERGENCY_HOVER);
-            }
-            return hoverInPlace(dragon, state);
-        }
-        if (arrived(dragon, goal)) {
-            boolean auto = DragonRideState.autoControl(dragon) || DragonRideState.riderId(dragon) == null;
-            if (auto) {
-                DragonAutopilot.beginLanding(dragon, goal);
-                return landing(dragon, state);
-            }
-            return hoverInPlace(dragon, state);
-        }
-        Vec3 dir = DragonGuidance.steer(dragon, goal, state);
-        if (dir.lengthSqr() < 1.0E-6D) return Vec3.ZERO;
-        return dir.scale(DragonMoveMath.CRUISE_SPEED);
-    }
-
-    private static Vec3 takeoff(EntityDragonBase dragon, DragonFlightRegistry.RuntimeState state) {
-        if (state.takeoffStartY <= 0.0D) state.takeoffStartY = dragon.getY();
-        if (dragon.getY() - state.takeoffStartY >= TAKEOFF_ALTITUDE) {
-            state.takeoffStartY = 0.0D;
+    private static Intent takeoff(EntityDragonBase dragon, DragonFlightRegistry.RuntimeState state) {
+        if (!Double.isFinite(state.takeoffStartY)) state.takeoffStartY = dragon.getY();
+        double targetY = DragonMoveMath.resolveLiftAltitude(state.takeoffStartY, dragon.level().getMinBuildHeight(), dragon.level().getMaxBuildHeight());
+        if (dragon.getY() >= targetY - 0.5D) {
             DragonRideState.setPhase(dragon, DragonRideState.Phase.CRUISE);
+            state.takeoffStartY = Double.NaN;
+            return behaviour(dragon, state);
         }
-        return new Vec3(0.0D, DragonMoveMath.CRUISE_SPEED * 0.5D, 0.0D);
+        return intentTo(dragon, new Vec3(dragon.getX(), targetY, dragon.getZ()), DragonMoveMath.CRUISE_SPEED * 0.5D, null);
     }
 
-    private static Vec3 landing(EntityDragonBase dragon, DragonFlightRegistry.RuntimeState state) {
-        Vec3 spot = DragonRideState.hasLandingSpot(dragon) ? DragonRideState.landingSpot(dragon) : null;
-        if (spot == null) return hoverInPlace(dragon, state);
+    private static Intent landing(EntityDragonBase dragon, DragonFlightRegistry.RuntimeState state) {
+        if (!DragonRideState.hasLandingSpot(dragon)) return Intent.stop();
+        Vec3 spot = DragonRideState.landingSpot(dragon);
         double horizontal = Math.hypot(spot.x - dragon.getX(), spot.z - dragon.getZ());
-        if (horizontal > 5.0D || dragon.getY() > spot.y + 10.0D) {
-            Vec3 toward = spot.subtract(dragon.position());
-            double length = toward.length();
-            return length < 1.0E-4D ? Vec3.ZERO : toward.scale(DragonMoveMath.CRUISE_SPEED * 0.7D / length);
+        if (horizontal > 3.0D || dragon.getY() > spot.y + 2.0D) {
+            Vec3 approach = new Vec3(spot.x, spot.y + 10.0D, spot.z);
+            return intentTo(dragon, approach, DragonMoveMath.COMBAT_SPEED, null);
         }
-        return new Vec3(0.0D, -Math.min(0.35D, DragonMoveMath.CRUISE_SPEED * 0.5D), 0.0D);
+        return Intent.velocity(new Vec3(0.0D, -0.25D, 0.0D), null);
     }
 
-    private static Vec3 hoverAttack(EntityDragonBase dragon, DragonFlightRegistry.RuntimeState state) {
+    private static Intent transit(EntityDragonBase dragon, DragonFlightRegistry.RuntimeState state) {
+        if (!DragonRideState.hasTask(dragon)) return Intent.stop();
+        Vec3 task = DragonRideState.task(dragon);
+        if (!finite(task)) {
+            DragonAutopilot.forceEndControl(dragon);
+            return Intent.stop();
+        }
+        double horizontal = Math.hypot(task.x - dragon.getX(), task.z - dragon.getZ());
+        if (horizontal <= ARRIVAL_HORIZONTAL) {
+            if (DragonRideState.autoControl(dragon) || DragonRideState.riderId(dragon) == null) DragonAutopilot.beginLanding(dragon, task);
+            return Intent.stop();
+        }
+        double y = DragonMoveMath.resolveCruiseAltitude(task.y, dragon.getY(), dragon.level().getMinBuildHeight(), dragon.level().getMaxBuildHeight());
+        Vec3 airGoal = new Vec3(task.x, y, task.z);
+        ensurePath(dragon, state, airGoal);
+        // Planning is incremental.  A still-running job is not a failed route and must not
+        // advance the emergency counter merely because it needs another server tick.
+        if (state.pathJob != null) return Intent.stop();
+        if (state.path.isEmpty()) return noPath(dragon, state);
+        Vec3 lookAhead = DragonGuidance.lookAhead(dragon, airGoal, state);
+        return intentTo(dragon, lookAhead, DragonMoveMath.CRUISE_SPEED * flightModifier(dragon), null);
+    }
+
+    private static void ensurePath(EntityDragonBase dragon, DragonFlightRegistry.RuntimeState state, Vec3 goal) {
+        long now = dragon.level().getGameTime();
+        boolean goalChanged = state.lastGoal == null || state.lastGoal.distanceToSqr(goal) > 16.0D;
+        boolean stale = state.path.isEmpty() && state.pathJob == null
+                && (state.replanTick == 0L || now - state.replanTick >= 20L);
+        boolean offPath = !state.path.isEmpty() && distanceToRemainingPath(dragon.position(), state) > 64.0D;
+        if ((goalChanged || stale || offPath || state.stalledTicks >= 20) && state.pathJob == null) {
+            state.pathJob = DragonPathPlanner.create(dragon, goal);
+            state.path = List.of();
+            state.pathIndex = 0;
+            state.lastGoal = goal;
+            state.replanTick = now;
+            state.stalledTicks = 0;
+        }
+        if (state.pathJob != null) {
+            List<Vec3> result = DragonPathPlanner.advance(dragon, state.pathJob);
+            if (result != null) {
+                state.pathJob = null;
+                state.path = result;
+                state.pathIndex = 0;
+                if (!result.isEmpty()) state.noPathTicks = 0;
+            }
+        }
+        if (state.lastPosition != null && dragon.position().distanceToSqr(state.lastPosition) < 0.0625D && state.speed > 0.2D) state.stalledTicks++;
+        else state.stalledTicks = 0;
+    }
+
+    private static double distanceToRemainingPath(Vec3 position, DragonFlightRegistry.RuntimeState state) {
+        double best = Double.MAX_VALUE;
+        for (int i = state.pathIndex; i < state.path.size(); i++) best = Math.min(best, position.distanceToSqr(state.path.get(i)));
+        return best;
+    }
+
+    private static Intent noPath(EntityDragonBase dragon, DragonFlightRegistry.RuntimeState state) {
+        state.noPathTicks++;
+        if (state.noPathTicks >= EMERGENCY_THRESHOLD) {
+            DragonRideState.setMission(dragon, DragonRideState.Mission.EMERGENCY_HOVER);
+            stopBreath(dragon);
+        }
+        return Intent.stop();
+    }
+
+    private static Intent hoverAttack(EntityDragonBase dragon, DragonFlightRegistry.RuntimeState state) {
         LivingEntity target = dragon.getTarget();
-        if (target == null || !target.isAlive() || target.isRemoved()) {
+        if (target == null || !target.isAlive() || target.isRemoved() || target.level() != dragon.level()) {
+            stopBreath(dragon);
             DragonRideState.setMission(dragon, DragonRideState.Mission.TRANSIT);
-            return hoverInPlace(dragon, state);
+            return Intent.stop();
         }
         Vec3 targetPos = target.position();
-        Vec3 delta = dragon.position().subtract(targetPos);
-        double horizontal = Math.hypot(delta.x, delta.z);
-        double distance = HOVER_DISTANCE_BASE + dragon.getBbWidth() * 0.5D;
-        Vec3 hover = targetPos;
-        if (horizontal > 1.0E-4D) {
-            hover = targetPos.add(delta.scale(distance / horizontal));
+        if (state.hoverAnchor == null) {
+            Vec3 radial = dragon.position().subtract(targetPos);
+            radial = DragonMoveMath.normalizeOr(new Vec3(radial.x, 0.0D, radial.z), state.lastSafeDirection);
+            double radius = HOVER_DISTANCE_BASE + dragon.getBbWidth() * 0.5D;
+            state.hoverAnchor = targetPos.add(radial.scale(radius));
         }
-        hover = new Vec3(hover.x, targetPos.y + HOVER_HEIGHT_BASE + HOVER_HEIGHT_PER_STAGE * dragon.getDragonStage(), hover.z);
-        Vec3 velocity = DragonMoveMath.dampedHover(dragon.position(), hover, dragon.getDeltaMovement(),
-                DragonMoveMath.COMBAT_SPEED);
-        long now = dragon.level().getGameTime();
-        if (now - state.lastFireTick >= FIRE_INTERVAL_TICKS
-                && dragon.hasLineOfSight(target)
-                && yawError(dragon, targetPos) <= YAW_ERROR_LIMIT
-                && hostile(dragon, target)) {
-            dragon.stimulateFire(targetPos.x, targetPos.y + target.getBbHeight() * 0.5D, targetPos.z, 1);
-            state.lastFireTick = now;
-        }
-        return velocity;
+        double radius = HOVER_DISTANCE_BASE + dragon.getBbWidth() * 0.5D;
+        Vec3 radial = state.hoverAnchor.subtract(targetPos);
+        radial = DragonMoveMath.normalizeOr(new Vec3(radial.x, 0.0D, radial.z), state.lastSafeDirection);
+        state.hoverAnchor = new Vec3(targetPos.x + radial.x * radius,
+                targetPos.y + HOVER_HEIGHT_BASE + HOVER_HEIGHT_PER_STAGE * dragon.getDragonStage(), targetPos.z + radial.z * radius);
+        fireAt(dragon, state, target, targetPos);
+        return intentTo(dragon, state.hoverAnchor, DragonMoveMath.COMBAT_SPEED * flightModifier(dragon), targetPos);
     }
 
-    private static Vec3 orbit(EntityDragonBase dragon, DragonFlightRegistry.RuntimeState state) {
+    private static Intent orbit(EntityDragonBase dragon, DragonFlightRegistry.RuntimeState state) {
         Vec3 center = DragonRideState.hasTask(dragon) ? DragonRideState.task(dragon) : dragon.position();
-        double radius = Math.max(1.0D, DragonRideState.aoeRadius(dragon) + ORBIT_MARGIN);
-        int direction = (dragon.getUUID().hashCode() & 1) == 0 ? 1 : -1;
-        double angle = Math.atan2(dragon.getZ() - center.z, dragon.getX() - center.x);
-        double step = DragonMoveMath.COMBAT_SPEED / radius * direction;
-        double next = angle + step;
-        Vec3 desired = new Vec3(center.x + Math.cos(next) * radius, center.y + 2.0D, center.z + Math.sin(next) * radius);
-        Vec3 velocity = DragonMoveMath.dampedHover(dragon.position(), desired, dragon.getDeltaMovement(),
-                DragonMoveMath.COMBAT_SPEED);
-        long now = dragon.level().getGameTime();
-        if (now - state.lastFireTick >= ORBIT_QUERY_INTERVAL) {
+        double radius = Math.max(1.0D, DragonRideState.aoeRadius(dragon) + 12.0D);
+        Vec3 radial = new Vec3(dragon.getX() - center.x, 0.0D, dragon.getZ() - center.z);
+        radial = DragonMoveMath.normalizeOr(radial, state.lastSafeDirection);
+        int sign = (dragon.getUUID().hashCode() & 1) == 0 ? 1 : -1;
+        Vec3 tangent = new Vec3(-radial.z * sign, 0.0D, radial.x * sign);
+        double radialError = Math.hypot(dragon.getX() - center.x, dragon.getZ() - center.z) - radius;
+        double desiredY = center.y + HOVER_HEIGHT_BASE + HOVER_HEIGHT_PER_STAGE * dragon.getDragonStage();
+        Vec3 velocity = tangent.scale(DragonMoveMath.COMBAT_SPEED).add(radial.scale(-radialError * 0.08D))
+                .add(0.0D, (desiredY - dragon.getY()) * 0.08D, 0.0D);
+        if (dragon.level().getGameTime() - state.lastHostileQueryTick >= HOSTILE_QUERY_INTERVAL) {
+            state.lastHostileQueryTick = dragon.level().getGameTime();
             LivingEntity target = nearestHostile(dragon, center);
-            if (target != null && dragon.hasLineOfSight(target)) {
-                Vec3 pos = target.position();
-                dragon.stimulateFire(pos.x, pos.y + target.getBbHeight() * 0.5D, pos.z, 1);
-                state.lastFireTick = now;
-            }
+            if (target != null) fireAt(dragon, state, target, target.position());
         }
-        return velocity;
+        return Intent.velocity(DragonMoveMath.clampSpeed(velocity, DragonMoveMath.COMBAT_SPEED * flightModifier(dragon)), center);
     }
 
-    private static Vec3 strafe(EntityDragonBase dragon, DragonFlightRegistry.RuntimeState state) {
+    private static Intent areaHold(EntityDragonBase dragon, DragonFlightRegistry.RuntimeState state) {
+        stopBreath(dragon);
         Vec3 center = DragonRideState.hasTask(dragon) ? DragonRideState.task(dragon) : dragon.position();
+        Vec3 anchor = new Vec3(center.x, center.y + HOVER_HEIGHT_BASE + HOVER_HEIGHT_PER_STAGE * dragon.getDragonStage(), center.z);
+        return intentTo(dragon, anchor, DragonMoveMath.HOVER_SPEED, null);
+    }
+
+    private static Intent strafe(EntityDragonBase dragon, DragonFlightRegistry.RuntimeState state) {
+        Vec3 center = DragonRideState.hasTask(dragon) ? DragonRideState.task(dragon) : dragon.position();
+        if (state.strafeAxis == null) state.strafeAxis = DragonMoveMath.normalizeOr(new Vec3(center.x - dragon.getX(), 0.0D, center.z - dragon.getZ()), state.lastSafeDirection);
         Vec3 axis = state.strafeAxis;
-        if (axis == null) {
-            Vec3 delta = center.subtract(dragon.position());
-            double length = Math.hypot(delta.x, delta.z);
-            axis = length < 1.0E-4D ? new Vec3(1.0D, 0.0D, 0.0D) : delta.scale(1.0D / length);
-            state.strafeAxis = axis;
-        }
         double radius = Math.max(1.0D, DragonRideState.aoeRadius(dragon));
-        switch (state.strafeStage) {
-            case 0 -> {
-                Vec3 entry = center.add(axis.scale(-(radius + STRAFE_BEHIND)));
-                if (dragon.position().distanceToSqr(entry) < 36.0D) {
-                    state.strafeStage = 1;
-                }
-                return toward(dragon.position(), new Vec3(entry.x, center.y + 4.0D, entry.z),
-                        DragonMoveMath.STRAFE_SPEED);
-            }
-            case 1 -> {
-                Vec3 pass = dragon.position().subtract(center);
-                double along = pass.x * axis.x + pass.z * axis.z;
-                if (along > radius + 8.0D) state.strafeStage = 2;
-                return new Vec3(axis.x * DragonMoveMath.STRAFE_SPEED, 0.0D, axis.z * DragonMoveMath.STRAFE_SPEED);
-            }
-            default -> {
-                if (dragon.position().distanceTo(center) >= STRAFE_EGRESS) {
-                    state.strafeStage = 0;
-                    state.strafeAxis = null;
-                    DragonRideState.setMission(dragon, DragonRideState.Mission.HOVER_ATTACK);
-                }
-                return new Vec3(axis.x * DragonMoveMath.STRAFE_SPEED, 0.0D, axis.z * DragonMoveMath.STRAFE_SPEED);
-            }
+        long now = dragon.level().getGameTime();
+        if (state.strafeStageStartTick == 0L) state.strafeStageStartTick = now;
+        if (now - state.strafeStageStartTick > 200L) {
+            stopBreath(dragon);
+            DragonRideState.setMission(dragon, DragonRideState.Mission.EMERGENCY_HOVER);
+            return Intent.stop();
         }
-    }
-
-    private static Vec3 emergencyHover(EntityDragonBase dragon, DragonFlightRegistry.RuntimeState state) {
-        return hoverInPlace(dragon, state);
-    }
-
-    private static Vec3 hoverInPlace(EntityDragonBase dragon, DragonFlightRegistry.RuntimeState state) {
-        return DragonMoveMath.dampedHover(dragon.position(), dragon.position(), dragon.getDeltaMovement(),
-                DragonMoveMath.HOVER_SPEED);
-    }
-
-    private static Vec3 separation(EntityDragonBase dragon) {
-        Vec3 push = Vec3.ZERO;
-        for (Map.Entry<UUID, Vec3> entry : DragonFlightRegistry.positions(dragon).entrySet()) {
-            Vec3 other = entry.getValue();
-            double distance = dragon.position().distanceTo(other);
-            if (distance >= SEPARATION_RADIUS || distance < 1.0E-4D) continue;
-            double strength = (1.0D - distance / SEPARATION_RADIUS) * 0.12D;
-            push = push.add(dragon.position().subtract(other).normalize().scale(strength));
+        if (state.strafeStage == 0) {
+            Vec3 entry = center.add(axis.scale(-(radius + 24.0D))).add(0.0D, HOVER_HEIGHT_BASE, 0.0D);
+            if (dragon.position().distanceToSqr(entry) < 36.0D) { state.strafeStage = 1; state.strafeStageStartTick = now; }
+            return intentTo(dragon, entry, DragonMoveMath.STRAFE_SPEED * flightModifier(dragon), center);
         }
-        return push;
+        double along = (dragon.getX() - center.x) * axis.x + (dragon.getZ() - center.z) * axis.z;
+        if (state.strafeStage == 1) {
+            if (Math.abs(along) <= radius + 2.0D) {
+                LivingEntity target = nearestHostile(dragon, center);
+                if (target != null) fireAt(dragon, state, target, target.position());
+            } else stopBreath(dragon);
+            if (along > radius + 8.0D) { state.strafeStage = 2; state.strafeStageStartTick = now; stopBreath(dragon); }
+            return Intent.velocity(axis.scale(DragonMoveMath.STRAFE_SPEED * flightModifier(dragon)), center);
+        }
+        if (along > radius + 32.0D) {
+            stopBreath(dragon);
+            state.resetManeuver();
+            DragonRideState.setMission(dragon, DragonRideState.Mission.AREA_HOLD);
+        }
+        return Intent.velocity(axis.scale(DragonMoveMath.STRAFE_SPEED * flightModifier(dragon)), null);
     }
 
-    private static void applyMotion(EntityDragonBase dragon, Vec3 velocity) {
-        DragonFlightRegistry.RuntimeState state = DragonFlightRegistry.state(dragon);
-        double currentSpeed = state.speed;
-        double targetSpeed = velocity.length();
+    private static void applyIntent(EntityDragonBase dragon, DragonFlightRegistry.RuntimeState state, Intent intent) {
+        Vec3 requested = intent.velocity;
+        requested = requested.add(DragonFlightRegistry.separation(dragon, SEPARATION_RADIUS));
+        Vec3 requestedDir = DragonMoveMath.normalizeOr(requested, state.lastSafeDirection);
+        Vec3 safe = DragonGuidance.steer(dragon, requestedDir, state);
+        if (safe == null) {
+            applyMotion(dragon, state, DragonMoveMath.normalizeOr(dragon.getDeltaMovement(), state.lastSafeDirection), 0.0D);
+            return;
+        }
+        applyMotion(dragon, state, safe, requested.length());
+    }
+
+    private static void applyMotion(EntityDragonBase dragon, DragonFlightRegistry.RuntimeState state, Vec3 desiredDirection, double requestedSpeed) {
+        Vec3 currentVelocity = dragon.getDeltaMovement();
+        double currentSpeed = currentVelocity.length();
+        Vec3 currentDirection = DragonMoveMath.normalizeOr(currentVelocity, state.lastSafeDirection);
+        double targetSpeed = DragonMoveMath.turnLimitedSpeed(requestedSpeed, currentDirection, desiredDirection);
         double step = targetSpeed >= currentSpeed ? DragonMoveMath.ACCELERATION : DragonMoveMath.BRAKE_DECELERATION;
-        state.speed = DragonMoveMath.approach(currentSpeed, targetSpeed, step);
-        Vec3 dir = targetSpeed < 1.0E-4D ? Vec3.ZERO : velocity.scale(1.0D / targetSpeed);
-        dragon.setDeltaMovement(dir.scale(state.speed));
-        double horizontal = Math.hypot(dragon.getDeltaMovement().x, dragon.getDeltaMovement().z);
-        if (horizontal > 0.01D) {
-            double targetYaw = Math.toDegrees(Math.atan2(-dragon.getDeltaMovement().x, dragon.getDeltaMovement().z));
-            double yaw = DragonMoveMath.approachDegrees(dragon.getYRot(), targetYaw,
-                    DragonMoveMath.yawRate(dragon.getDragonStage()));
-            dragon.setYRot((float) yaw);
-            dragon.setYHeadRot((float) yaw);
-            dragon.yBodyRot = (float) yaw;
-        }
-        if (targetSpeed > 1.0E-4D) {
-            double targetPitch = DragonMoveMath.clampPitch(DragonMoveMath.pitchTo(velocity));
-            dragon.setXRot((float) DragonMoveMath.approach(dragon.getXRot(), targetPitch, DragonMoveMath.PITCH_RATE));
-        }
+        double nextSpeed = DragonMoveMath.approach(currentSpeed, targetSpeed, step);
+        Vec3 nextDirection = DragonMoveMath.turnToward(currentDirection, desiredDirection, DragonMoveMath.yawRate(dragon.getDragonStage()), DragonMoveMath.PITCH_RATE);
+        Vec3 nextVelocity = nextDirection.scale(nextSpeed);
+        state.speed = nextSpeed;
+        state.lastSafeDirection = nextDirection;
+        dragon.setDeltaMovement(nextVelocity);
+        double yaw = Math.toDegrees(Math.atan2(-nextDirection.x, nextDirection.z));
+        dragon.setYRot((float) yaw);
+        dragon.setYHeadRot((float) yaw);
+        dragon.yBodyRot = (float) yaw;
+        dragon.setXRot((float) DragonMoveMath.clampPitch(DragonMoveMath.pitchTo(nextDirection)));
     }
 
-    private static double maxSpeed(EntityDragonBase dragon) {
-        double base = switch (DragonRideState.mission(dragon)) {
-            case HOVER_ATTACK, ORBIT, EMERGENCY_HOVER -> DragonMoveMath.COMBAT_SPEED;
-            case STRAFE_APPROACH, STRAFE_RUN, STRAFE_EGRESS -> DragonMoveMath.STRAFE_SPEED;
-            default -> DragonMoveMath.CRUISE_SPEED;
-        };
-        return base * dragon.getFlightSpeedModifier();
+    private static void fireAt(EntityDragonBase dragon, DragonFlightRegistry.RuntimeState state, LivingEntity target, Vec3 targetPos) {
+        long now = dragon.level().getGameTime();
+        if (now - state.lastFireTick < FIRE_INTERVAL || !dragon.hasLineOfSight(target) || !hostile(dragon, target)) { stopBreath(dragon); return; }
+        dragon.setBreathingFire(true);
+        dragon.stimulateFire(targetPos.x, targetPos.y + target.getBbHeight() * 0.5D, targetPos.z, 1);
+        state.lastFireTick = now;
     }
 
-    private static boolean arrived(EntityDragonBase dragon, Vec3 goal) {
-        double horizontal = Math.hypot(goal.x - dragon.getX(), goal.z - dragon.getZ());
-        return horizontal <= ARRIVAL_HORIZONTAL && Math.abs(goal.y - dragon.getY()) <= ARRIVAL_VERTICAL;
-    }
-
-    private static double yawError(EntityDragonBase dragon, Vec3 target) {
-        double targetYaw = Math.toDegrees(Math.atan2(-(target.x - dragon.getX()), target.z - dragon.getZ()));
-        return Math.abs(DragonMoveMath.wrapDegrees(targetYaw - dragon.getYRot()));
-    }
+    private static void stopBreath(EntityDragonBase dragon) { dragon.setBreathingFire(false); }
 
     private static boolean hostile(EntityDragonBase dragon, LivingEntity candidate) {
         ServerPlayer commander = commander(dragon);
-        if (commander == null) return true;
-        List<? extends Entity> allies = new ArrayList<>(PlayerControl.mobs(commander));
+        if (commander == null) return false;
+        List<Entity> allies = new ArrayList<>(PlayerControl.mobs(commander));
+        allies.add(dragon);
         return DominionTargeting.isHostileCandidate(commander, allies, candidate);
     }
 
@@ -309,31 +295,55 @@ public final class DragonFlightController {
         if (commander == null || !(dragon.level() instanceof ServerLevel level)) return null;
         double radius = Math.max(1.0D, DragonRideState.aoeRadius(dragon));
         double halfHeight = Math.max(1.0D, DragonRideState.aoeHalfHeight(dragon));
-        AABB box = new AABB(center.x - radius, center.y - halfHeight, center.z - radius,
-                center.x + radius, center.y + halfHeight, center.z + radius);
-        List<? extends Entity> allies = new ArrayList<>(PlayerControl.mobs(commander));
+        AABB box = new AABB(center.x - radius, center.y - halfHeight, center.z - radius, center.x + radius, center.y + halfHeight, center.z + radius);
+        List<Entity> allies = new ArrayList<>(PlayerControl.mobs(commander));
+        allies.add(dragon);
         LivingEntity best = null;
         double bestDistance = Double.MAX_VALUE;
-        for (LivingEntity candidate : level.getEntitiesOfClass(LivingEntity.class, box,
-                entity -> DominionTargeting.isHostileCandidate(commander, allies, entity))) {
+        for (LivingEntity candidate : level.getEntitiesOfClass(LivingEntity.class, box, entity -> hostileCylinder(center, radius, halfHeight, entity)
+                && DominionTargeting.isHostileCandidate(commander, allies, entity))) {
             double distance = dragon.distanceToSqr(candidate);
-            if (distance < bestDistance) {
-                bestDistance = distance;
-                best = candidate;
-            }
+            if (distance < bestDistance) { bestDistance = distance; best = candidate; }
         }
         return best;
     }
 
-    private static ServerPlayer commander(EntityDragonBase dragon) {
-        UUID controller = PlayerControl.controller(dragon);
-        if (controller == null || !(dragon.level() instanceof ServerLevel level)) return null;
-        return level.getServer().getPlayerList().getPlayer(controller);
+    private static boolean hostileCylinder(Vec3 center, double radius, double halfHeight, LivingEntity entity) {
+        double dx = entity.getX() - center.x, dz = entity.getZ() - center.z;
+        return dx * dx + dz * dz <= radius * radius && Math.abs(entity.getY() - center.y) <= halfHeight;
     }
 
-    private static Vec3 toward(Vec3 from, Vec3 to, double speed) {
-        Vec3 delta = to.subtract(from);
+    private static ServerPlayer commander(EntityDragonBase dragon) {
+        UUID id = PlayerControl.controller(dragon);
+        if (id == null || !(dragon.level() instanceof ServerLevel level)) return null;
+        return level.getServer().getPlayerList().getPlayer(id);
+    }
+
+    private static void finishLanding(EntityDragonBase dragon) {
+        stopBreath(dragon);
+        dragon.setFlying(false);
+        dragon.setHovering(false);
+        DragonRideState.clearLandingSpot(dragon);
+        DragonRideState.setPhase(dragon, DragonRideState.Phase.GROUND);
+        DragonRideState.setMission(dragon, DragonRideState.Mission.TRANSIT);
+        if (DragonRideState.hasTask(dragon)) DragonRideState.clearTask(dragon);
+    }
+
+    private static boolean finite(Vec3 value) { return Double.isFinite(value.x) && Double.isFinite(value.y) && Double.isFinite(value.z); }
+
+    private static double flightModifier(EntityDragonBase dragon) {
+        double modifier = dragon.getFlightSpeedModifier();
+        return Double.isFinite(modifier) ? Math.max(0.25D, Math.min(2.0D, modifier)) : 1.0D;
+    }
+
+    private static Intent intentTo(EntityDragonBase dragon, Vec3 position, double speed, Vec3 facing) {
+        Vec3 delta = position.subtract(dragon.position());
         double length = delta.length();
-        return length < 1.0E-4D ? Vec3.ZERO : delta.scale(speed / length);
+        return Intent.velocity(length < 1.0E-6D ? Vec3.ZERO : delta.scale(speed / length), facing);
+    }
+
+    private record Intent(Vec3 velocity, Vec3 facing) {
+        static Intent velocity(Vec3 velocity, Vec3 facing) { return new Intent(velocity, facing); }
+        static Intent stop() { return new Intent(Vec3.ZERO, null); }
     }
 }

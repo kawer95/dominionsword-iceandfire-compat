@@ -4,6 +4,7 @@ import com.arxyt.dominionsword.api.DominionControlApi;
 import com.arxyt.dominionsword.api.DominionSkills;
 import com.arxyt.dominionsword.control.PlayerControl;
 import com.arxyt.dominionsword.iceandfirecompat.control.DragonAutopilot;
+import com.arxyt.dominionsword.iceandfirecompat.control.DragonFlightRegistry;
 import com.arxyt.dominionsword.iceandfirecompat.control.DragonControlModeSource;
 import com.arxyt.dominionsword.iceandfirecompat.control.DragonControlPolicy;
 import com.arxyt.dominionsword.iceandfirecompat.control.DragonRideState;
@@ -15,6 +16,8 @@ import net.minecraft.server.level.ServerPlayer;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.event.entity.EntityJoinLevelEvent;
+import net.minecraftforge.event.entity.EntityLeaveLevelEvent;
+import net.minecraftforge.event.level.BlockEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.ModList;
 import net.minecraftforge.fml.common.Mod;
@@ -61,6 +64,7 @@ public final class DominionSwordIceAndFireCompatMod {
 
         @SubscribeEvent
         public static void onServerTick(TickEvent.ServerTickEvent event) {
+            if (event.phase == TickEvent.Phase.START) DragonFlightRegistry.beginServerTick(event.getServer());
             if (event.phase == TickEvent.Phase.END) DragonAutopilot.tick(event.getServer());
         }
 
@@ -80,7 +84,17 @@ public final class DominionSwordIceAndFireCompatMod {
                 ServerPlayer player = level.getServer().getPlayerList().getPlayer(owner);
                 validOwner = player != null && PlayerControl.ids(player).contains(dragon.getUUID());
             }
-            if (!validOwner) DragonAutopilot.endControl(dragon);
+            if (!validOwner) DragonAutopilot.forceEndControl(dragon);
+        }
+
+        @SubscribeEvent
+        public static void onEntityLeave(EntityLeaveLevelEvent event) {
+            if (event.getEntity() instanceof EntityDragonBase dragon) DragonFlightRegistry.remove(dragon);
+        }
+
+        @SubscribeEvent
+        public static void onBlockChanged(BlockEvent event) {
+            if (event.getLevel() instanceof ServerLevel level) DragonFlightRegistry.invalidateCorridors(level.dimension());
         }
     }
 }

@@ -1,7 +1,9 @@
 package com.arxyt.dominionsword.iceandfirecompat;
 
 import com.arxyt.dominionsword.api.DominionVehicleAdapter;
+import com.arxyt.dominionsword.api.DominionTargeting;
 import com.arxyt.dominionsword.api.VehicleDismounts;
+import com.arxyt.dominionsword.control.PlayerControl;
 import com.arxyt.dominionsword.iceandfirecompat.control.DragonAutopilot;
 import com.arxyt.dominionsword.iceandfirecompat.control.DragonControlPolicy;
 import com.arxyt.dominionsword.iceandfirecompat.control.DragonRideState;
@@ -82,7 +84,10 @@ public final class IceAndFireDragonVehicleAdapter implements DominionVehicleAdap
 
     @Override
     public boolean release(ServerPlayer player, Entity vehicle) {
-        if (vehicle instanceof EntityDragonBase dragon) DragonAutopilot.endControl(dragon);
+        if (vehicle instanceof EntityDragonBase dragon) {
+            if (player == null) DragonAutopilot.forceEndControl(dragon);
+            else if (DragonControlPolicy.allows(player, dragon) && player.getUUID().equals(PlayerControl.controller(dragon))) DragonAutopilot.endControl(dragon);
+        }
         return true;
     }
 
@@ -123,7 +128,10 @@ public final class IceAndFireDragonVehicleAdapter implements DominionVehicleAdap
     @Override
     public boolean move(ServerPlayer player, Entity vehicle, Vec3 target) {
         if (!(vehicle instanceof EntityDragonBase dragon) || !valid(dragon) || target == null) return false;
-        if (player != null && !DragonControlPolicy.allows(player, dragon)) return false;
+        if (!Double.isFinite(target.x) || !Double.isFinite(target.y) || !Double.isFinite(target.z)) return false;
+        if (player != null && (!DragonControlPolicy.allows(player, dragon) || !player.getUUID().equals(PlayerControl.controller(dragon))
+                || player.level() != dragon.level())) return false;
+        if (player == null && !PlayerControl.hasPersistentVehicleTask(dragon)) return false;
         DragonAutopilot.updateTask(dragon, target);
         if (dragon.onGround() && !dragon.isFlying() && DragonRideState.hasTask(dragon) && dragon.hasFlightClearance()) {
             DragonAutopilot.beginTakeoff(dragon);
@@ -134,7 +142,11 @@ public final class IceAndFireDragonVehicleAdapter implements DominionVehicleAdap
     @Override
     public boolean attack(ServerPlayer player, Entity vehicle, LivingEntity target) {
         if (!(vehicle instanceof EntityDragonBase dragon) || !valid(dragon) || target == null || !target.isAlive()) return false;
-        if (player != null && !DragonControlPolicy.allows(player, dragon)) return false;
+        if (target.level() != dragon.level()) return false;
+        if (player != null && (!DragonControlPolicy.allows(player, dragon) || !player.getUUID().equals(PlayerControl.controller(dragon))
+                || player.level() != dragon.level()
+                || !DominionTargeting.isHostileCandidate(player, java.util.List.of(dragon), target))) return false;
+        if (player == null && !PlayerControl.hasPersistentVehicleTask(dragon)) return false;
         LivingEntity currentTarget = dragon.getTarget();
         UUID commanded = DragonRideState.attackTarget(dragon);
         if (commanded != null && commanded.equals(target.getUUID())

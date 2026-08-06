@@ -92,4 +92,13 @@ class DragonMoveMathTest {
         assertTrue(hover.length() <= DragonMoveMath.COMBAT_SPEED + 1.0E-6D);
         assertEquals(-35.0D, DragonMoveMath.clampPitch(-90.0D), 1.0E-6D);
     }
+
+    @Test
+    void turnLimiterCannotInstantlyReverseVelocityDirection() {
+        Vec3 forward = new Vec3(0.0D, 0.0D, 1.0D);
+        Vec3 oneTick = DragonMoveMath.turnToward(forward, new Vec3(0.0D, 0.0D, -1.0D), 6.0D, 3.0D);
+        assertTrue(oneTick.dot(forward) > 0.99D);
+        assertTrue(Double.isFinite(oneTick.x) && Double.isFinite(oneTick.y) && Double.isFinite(oneTick.z));
+        assertTrue(DragonMoveMath.turnLimitedSpeed(1.0D, forward, new Vec3(0.0D, 0.0D, -1.0D)) < 1.0D);
+    }
 }
