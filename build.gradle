@@ -82,6 +82,11 @@ dependencies {
     compileOnly files(project.property('dominionsword_jar'))
     compileOnly files(project.property('iaf_jar'))
     compileOnly files(project.property('uranus_jar'))
+    // Keep local mod dependencies out of the published jar while making Forge's development
+    // client/server runs representative of the real installation.
+    runtimeOnly files(project.property('dominionsword_jar'))
+    runtimeOnly files(project.property('iaf_jar'))
+    runtimeOnly files(project.property('uranus_jar'))
     testImplementation files(project.property('dominionsword_jar'))
     testImplementation files(project.property('iaf_jar'))
     testImplementation files(project.property('uranus_jar'))

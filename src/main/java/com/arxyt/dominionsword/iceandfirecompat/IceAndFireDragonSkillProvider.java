@@ -39,7 +39,12 @@ public final class IceAndFireDragonSkillProvider implements DominionSkillProvide
 
     @Override
     public List<SkillView> skills(ServerPlayer commander, Entity actor) {
-        if (!(actor instanceof EntityDragonBase dragon) || !DragonRideState.isControlled(dragon)) return List.of();
+        if (!(actor instanceof EntityDragonBase dragon) || !DragonRideState.isControlled(dragon)
+                || commander == null || commander.level() != dragon.level()
+                || !DragonControlPolicy.allows(commander, dragon)
+                || !commander.getUUID().equals(PlayerControl.controller(dragon))) {
+            return List.of();
+        }
         long now = dragon.level().getGameTime();
         int remaining = (int) Math.max(0L,
                 Math.min(STRAFE_COOLDOWN_TICKS, DragonRideState.strafeReadyTick(dragon) - now));
@@ -91,11 +96,14 @@ public final class IceAndFireDragonSkillProvider implements DominionSkillProvide
 
     private static void wakeForMission(EntityDragonBase dragon) {
         DragonAutopilot.wake(dragon);
-        if (dragon.onGround() && !dragon.isFlying() && dragon.hasFlightClearance()) {
-            DragonAutopilot.beginTakeoff(dragon);
-        } else if (!dragon.isFlying() && !dragon.isHovering() && !dragon.onGround()) {
-            dragon.setFlying(true);
-            dragon.setHovering(false);
-        }
+        // Auto control (or a driver-less dragon, forced into auto control, or a dragon already
+        // airborne from a manual take-off) engages flight.  Manual mode with a driver and a
+        // grounded dragon must never auto-take-off: the skill stays queued until the player
+        // manually takes off.
+        boolean autoFlight = DragonRideState.autoControl(dragon) || DragonRideState.riderId(dragon) == null
+                || dragon.isFlying() || dragon.isHovering();
+        DragonRideState.setPhase(dragon, autoFlight ? DragonRideState.Phase.CRUISE : DragonRideState.Phase.GROUND);
+        dragon.setFlying(autoFlight);
+        dragon.setHovering(false);
     }
 }

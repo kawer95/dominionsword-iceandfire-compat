@@ -101,7 +101,11 @@ public final class DragonRideState {
     }
 
     public static void setControlled(EntityDragonBase dragon, boolean controlled) {
-        if (dragon != null) state(dragon).putBoolean(CONTROLLED, controlled);
+        if (dragon != null) {
+            state(dragon).putBoolean(CONTROLLED, controlled);
+            // Mirror to synced entity data so the client can suppress native pose logic.
+            DragonRiderSync.setControlled(dragon, controlled);
+        }
     }
 
     /** Server reads the authoritative NBT marker; client reads the synced {@link DragonRiderSync} value. */
@@ -293,8 +297,12 @@ public final class DragonRideState {
 
     public static void setAoeSpec(EntityDragonBase dragon, double radius, double halfHeight) {
         if (dragon == null) return;
-        state(dragon).putDouble(AOE_RADIUS, Math.max(1.0D, Math.min(64.0D, radius)));
-        state(dragon).putDouble(AOE_HALF_HEIGHT, Math.max(1.0D, Math.min(64.0D, halfHeight)));
+        state(dragon).putDouble(AOE_RADIUS, clampAoeDimension(radius));
+        state(dragon).putDouble(AOE_HALF_HEIGHT, clampAoeDimension(halfHeight));
+    }
+
+    static double clampAoeDimension(double value) {
+        return Double.isFinite(value) ? Math.max(1.0D, Math.min(64.0D, value)) : 1.0D;
     }
 
     public static long strafeReadyTick(EntityDragonBase dragon) {
@@ -308,16 +316,17 @@ public final class DragonRideState {
     /**
      * Single cleanup entry point for control end.
      *
-     * @param keepRider       keep the designated rider marker pair
+     * <p>The rider marker pair is intentionally never cleared here.  The marker is the fact that
+     * a specific mob is the dragon's designated rider, and it must survive control-end and
+     * force-end while that mob is still mounted; clearing it hands a still-mounted rider back to
+     * Ice And Fire's native prey-in-mouth pipeline (SHAKEPREY bite).  Markers are only removed
+     * by explicit dismount, rider death/removal, model-dead dismount, or board failure.
+     *
      * @param keepOfflineTask keep goal/landing/attack so a preserved offline order can continue
      */
-    public static void clearControlState(EntityDragonBase dragon, boolean keepRider, boolean keepOfflineTask) {
+    public static void clearControlState(EntityDragonBase dragon, boolean keepOfflineTask) {
         if (dragon == null) return;
         clearStateFields(state(dragon), keepOfflineTask);
-        if (!keepRider) {
-            Mob rider = riderEntity(dragon);
-            clearRiderMarkers(dragon, rider);
-        }
     }
 
     static void clearStateFields(CompoundTag state, boolean keepOfflineTask) {

@@ -12,6 +12,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class DragonRideStateCodecTest {
     @Test
+    void aoeDimensionsRejectNonFiniteValuesAndClampBounds() {
+        assertEquals(1.0D, DragonRideState.clampAoeDimension(Double.NaN));
+        assertEquals(1.0D, DragonRideState.clampAoeDimension(Double.POSITIVE_INFINITY));
+        assertEquals(1.0D, DragonRideState.clampAoeDimension(-2.0D));
+        assertEquals(24.0D, DragonRideState.clampAoeDimension(24.0D));
+        assertEquals(64.0D, DragonRideState.clampAoeDimension(100.0D));
+    }
+
+    @Test
     void vec3RoundTripAndClear() {
         CompoundTag state = new CompoundTag();
         Vec3 value = new Vec3(1.5D, -60.25D, 300.0D);

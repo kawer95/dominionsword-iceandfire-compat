@@ -9,22 +9,22 @@ import net.minecraft.world.phys.Vec3;
 public final class DragonMoveMath {
     public static final double AUTO_TAKEOFF_DISTANCE = 48.0D;
     public static final double AUTO_LAND_DISTANCE = 24.0D;
-    public static final double CRUISE_ALTITUDE = 16.0D;
-    public static final double TAKEOFF_LIFT = 12.0D;
+    public static final double CRUISE_ALTITUDE = 24.0D;
+    public static final double TAKEOFF_LIFT = 24.0D;
     public static final double VERTICAL_TAKEOFF_THRESHOLD = 10.0D;
     public static final double GOAL_CHANGE_EPSILON_SQ = 1.0E-4D;
     public static final double TOP_RESERVE = 16.0D;
     public static final double BOTTOM_RESERVE = 8.0D;
     public static final double CRUISE_FLOOR_BELOW_DRAGON = 4.0D;
-    public static final double CRUISE_SPEED = 0.8D;
-    public static final double COMBAT_SPEED = 0.55D;
+    public static final double CRUISE_SPEED = 1.75D;
+    public static final double COMBAT_SPEED = 0.7D;
     public static final double STRAFE_SPEED = 1.1D;
     public static final double HOVER_SPEED = 0.05D;
-    public static final double ACCELERATION = 0.06D;
-    public static final double BRAKE_DECELERATION = 0.10D;
-    public static final double YAW_BASE = 6.0D;
-    public static final double YAW_MIN = 3.0D;
-    public static final double PITCH_RATE = 3.0D;
+    public static final double ACCELERATION = 0.12D;
+    public static final double BRAKE_DECELERATION = 0.14D;
+    public static final double YAW_BASE = 8.0D;
+    public static final double YAW_MIN = 4.0D;
+    public static final double PITCH_RATE = 4.0D;
     public static final double PITCH_LIMIT = 35.0D;
 
     public enum FlightAction {
@@ -156,7 +156,7 @@ public final class DragonMoveMath {
         Vec3 b = normalizeOr(desiredDirection, currentDirection);
         double dot = Math.max(-1.0D, Math.min(1.0D, a.dot(b)));
         double angle = Math.acos(dot);
-        return desiredSpeed * Math.max(0.35D, Math.cos(angle * 0.5D));
+        return desiredSpeed * Math.max(0.6D, Math.cos(angle * 0.5D));
     }
 
     /** Error-damped hover velocity (PD style) toward a desired point. */

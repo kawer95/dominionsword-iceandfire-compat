@@ -19,6 +19,8 @@ import java.util.UUID;
 public final class DragonRiderSync {
     private static final EntityDataAccessor<Optional<UUID>> RIDER_ID =
             SynchedEntityData.defineId(EntityDragonBase.class, EntityDataSerializers.OPTIONAL_UUID);
+    private static final EntityDataAccessor<Boolean> CONTROLLED =
+            SynchedEntityData.defineId(EntityDragonBase.class, EntityDataSerializers.BOOLEAN);
 
     private DragonRiderSync() {
     }
@@ -30,7 +32,18 @@ public final class DragonRiderSync {
 
     /** Registers the key on a dragon's entity data (called from the defineSynchedData mixin). */
     public static void defineData(SynchedEntityData data) {
-        if (data != null && !data.hasItem(RIDER_ID)) data.define(RIDER_ID, Optional.empty());
+        if (data == null) return;
+        if (!data.hasItem(RIDER_ID)) data.define(RIDER_ID, Optional.empty());
+        if (!data.hasItem(CONTROLLED)) data.define(CONTROLLED, false);
+    }
+
+    /** Client-visible controlled flag so client-side native pose logic can be suppressed. */
+    public static boolean getControlled(EntityDragonBase dragon) {
+        return dragon != null && dragon.getEntityData().get(CONTROLLED);
+    }
+
+    public static void setControlled(EntityDragonBase dragon, boolean controlled) {
+        if (dragon != null) dragon.getEntityData().set(CONTROLLED, controlled);
     }
 
     public static UUID getRiderId(EntityDragonBase dragon) {

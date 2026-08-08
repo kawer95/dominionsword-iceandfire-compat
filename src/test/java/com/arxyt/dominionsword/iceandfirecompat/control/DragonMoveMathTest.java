@@ -20,16 +20,16 @@ class DragonMoveMathTest {
 
     @Test
     void liftAltitudeUsesDimensionBoundsInsteadOfHardCoded128() {
-        assertEquals(212.0D, DragonMoveMath.resolveLiftAltitude(200.0D, -64, 320), 1.0E-6D);
+        assertEquals(224.0D, DragonMoveMath.resolveLiftAltitude(200.0D, -64, 320), 1.0E-6D);
         assertEquals(304.0D, DragonMoveMath.resolveLiftAltitude(310.0D, -64, 320), 1.0E-6D);
-        assertEquals(12.0D, DragonMoveMath.resolveLiftAltitude(0.0D, 0, 256), 1.0E-6D);
+        assertEquals(24.0D, DragonMoveMath.resolveLiftAltitude(0.0D, 0, 256), 1.0E-6D);
     }
 
     @Test
     void cruiseAltitudeStaysAboveDragonAndBelowWorldCeiling() {
-        assertEquals(216.0D, DragonMoveMath.resolveCruiseAltitude(200.0D, 220.0D, -64, 320), 1.0E-6D);
+        assertEquals(224.0D, DragonMoveMath.resolveCruiseAltitude(200.0D, 220.0D, -64, 320), 1.0E-6D);
         assertEquals(304.0D, DragonMoveMath.resolveCruiseAltitude(300.0D, 220.0D, -64, 320), 1.0E-6D);
-        assertEquals(16.0D, DragonMoveMath.resolveCruiseAltitude(0.0D, -5.0D, 0, 256), 1.0E-6D);
+        assertEquals(24.0D, DragonMoveMath.resolveCruiseAltitude(0.0D, -5.0D, 0, 256), 1.0E-6D);
         assertEquals(76.0D, DragonMoveMath.resolveCruiseAltitude(50.0D, 80.0D, -64, 320), 1.0E-6D);
     }
 
@@ -71,9 +71,9 @@ class DragonMoveMathTest {
 
     @Test
     void yawRateShrinksWithStageAndNeverBelowMinimum() {
-        assertEquals(6.0D, DragonMoveMath.yawRate(0), 1.0E-6D);
-        assertEquals(3.0D, DragonMoveMath.yawRate(6), 1.0E-6D);
-        assertEquals(3.0D, DragonMoveMath.yawRate(12), 1.0E-6D);
+        assertEquals(8.0D, DragonMoveMath.yawRate(0), 1.0E-6D);
+        assertEquals(5.0D, DragonMoveMath.yawRate(6), 1.0E-6D);
+        assertEquals(4.0D, DragonMoveMath.yawRate(12), 1.0E-6D);
     }
 
     @Test

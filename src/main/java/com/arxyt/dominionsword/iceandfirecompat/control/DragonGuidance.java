@@ -50,6 +50,11 @@ public final class DragonGuidance {
         return best;
     }
 
+    /** Direct flight is the normal case; the grid planner is reserved for a genuinely blocked corridor. */
+    public static boolean directCorridorClear(EntityDragonBase dragon, Vec3 direction, DragonFlightRegistry.RuntimeState state) {
+        return corridorClear(dragon, DragonMoveMath.normalizeOr(direction, state.lastSafeDirection), stoppingLookAhead(dragon, state));
+    }
+
     public static Vec3 lookAhead(EntityDragonBase dragon, Vec3 goal, DragonFlightRegistry.RuntimeState state) {
         if (state.path.isEmpty()) return goal;
         Vec3 position = dragon.position();

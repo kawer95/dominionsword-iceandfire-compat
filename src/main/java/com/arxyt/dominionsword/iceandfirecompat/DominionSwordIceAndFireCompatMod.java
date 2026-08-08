@@ -3,10 +3,12 @@ package com.arxyt.dominionsword.iceandfirecompat;
 import com.arxyt.dominionsword.api.DominionControlApi;
 import com.arxyt.dominionsword.api.DominionSkills;
 import com.arxyt.dominionsword.control.PlayerControl;
+import com.arxyt.dominionsword.config.ServerConfig;
 import com.arxyt.dominionsword.iceandfirecompat.control.DragonAutopilot;
 import com.arxyt.dominionsword.iceandfirecompat.control.DragonFlightRegistry;
 import com.arxyt.dominionsword.iceandfirecompat.control.DragonControlModeSource;
 import com.arxyt.dominionsword.iceandfirecompat.control.DragonControlPolicy;
+import com.arxyt.dominionsword.iceandfirecompat.control.DragonControlMode;
 import com.arxyt.dominionsword.iceandfirecompat.control.DragonRideState;
 import com.arxyt.dominionsword.iceandfirecompat.control.DragonRiderSync;
 import com.iafenvoy.iceandfire.entity.EntityDragonBase;
@@ -18,6 +20,7 @@ import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.event.entity.EntityJoinLevelEvent;
 import net.minecraftforge.event.entity.EntityLeaveLevelEvent;
 import net.minecraftforge.event.level.BlockEvent;
+import net.minecraftforge.event.server.ServerStoppedEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.ModList;
 import net.minecraftforge.fml.common.Mod;
@@ -48,6 +51,13 @@ public final class DominionSwordIceAndFireCompatMod {
             return;
         }
         DragonRiderSync.ensureLoaded();
+        // The main mod owns the persisted server config; this bridge keeps every adapter entry
+        // on the same live policy without exposing Ice and Fire classes to the main mod.
+        setDragonControlModeSource(() -> switch (ServerConfig.ICE_AND_FIRE_DRAGON_CONTROL.get()) {
+            case "tamed_only" -> DragonControlMode.TAMED_ONLY;
+            case "all" -> DragonControlMode.ALL;
+            default -> DragonControlMode.OWNER_ONLY;
+        });
         event.enqueueWork(() -> {
             DominionControlApi.registerVehicleAdapter(new IceAndFireDragonVehicleAdapter());
             DominionSkills.register(new IceAndFireDragonSkillProvider());
@@ -72,19 +82,23 @@ public final class DominionSwordIceAndFireCompatMod {
         public static void onEntityJoin(EntityJoinLevelEvent event) {
             if (event.getLevel().isClientSide()) return;
             if (!(event.getEntity() instanceof EntityDragonBase dragon)) return;
-            if (DragonRideState.isControlled(dragon)) {
-                UUID rider = DragonRideState.riderId(dragon);
-                if (rider != null) DragonRiderSync.setRiderId(dragon, rider);
-            } else {
+            if (!DragonRideState.isControlled(dragon)) return;
+            UUID controller = PlayerControl.controller(dragon);
+            if (controller == null || !DragonControlPolicy.allows(controller, dragon)) {
+                DragonAutopilot.forceEndControl(dragon);
                 return;
             }
-            UUID owner = PlayerControl.controller(dragon);
-            boolean validOwner = false;
-            if (owner != null && event.getLevel() instanceof ServerLevel level) {
-                ServerPlayer player = level.getServer().getPlayerList().getPlayer(owner);
-                validOwner = player != null && PlayerControl.ids(player).contains(dragon.getUUID());
-            }
-            if (!validOwner) DragonAutopilot.forceEndControl(dragon);
+            // Mirror the persisted rider/controlled markers into synced entity data so the
+            // client renders the designated rider on the saddle from the very first tick.
+            UUID rider = DragonRideState.riderId(dragon);
+            if (rider != null) DragonRiderSync.setRiderId(dragon, rider);
+            DragonRiderSync.setControlled(dragon, true);
+            // Never force-end control here.  During a world reload the dragon joins before the
+            // owning player does, and forceEndControl() clears both the controlled flag and the
+            // rider marker, handing a still-mounted rider back to Ice And Fire's native
+            // prey-in-mouth pipeline (SHAKEPREY bite).  Ownership is validated online by
+            // DragonAutopilot.tick once the player is present; offline persistent tasks are
+            // intentionally allowed to keep running.
         }
 
         @SubscribeEvent
@@ -95,6 +109,11 @@ public final class DominionSwordIceAndFireCompatMod {
         @SubscribeEvent
         public static void onBlockChanged(BlockEvent event) {
             if (event.getLevel() instanceof ServerLevel level) DragonFlightRegistry.invalidateCorridors(level.dimension());
+        }
+
+        @SubscribeEvent
+        public static void onServerStopped(ServerStoppedEvent event) {
+            DragonFlightRegistry.clear();
         }
     }
 }

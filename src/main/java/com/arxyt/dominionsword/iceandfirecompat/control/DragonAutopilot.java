@@ -6,6 +6,7 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.Mob;
+import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.phys.Vec3;
 
 import java.util.UUID;
@@ -16,6 +17,7 @@ import java.util.UUID;
  * takeoff/landing initiation.
  */
 public final class DragonAutopilot {
+    private static final int RIDER_MISMATCH_GRACE_TICKS = 20;
     private DragonAutopilot() {
     }
 
@@ -33,21 +35,66 @@ public final class DragonAutopilot {
                     continue;
                 }
                 refreshRider(dragon);
+                healRiderMarker(dragon);
             }
         }
+    }
+
+    /**
+     * Repairs a lost rider marker.  The marker is the rider-protection key: if it is missing
+     * while a controlled dragon has exactly one mounted mob, the marker is restored so the
+     * native prey-in-mouth pipeline can never bite the rider again.
+     */
+    private static void healRiderMarker(EntityDragonBase dragon) {
+        if (dragon == null || DragonRideState.riderId(dragon) != null) return;
+        if (!(dragon.level() instanceof net.minecraft.server.level.ServerLevel)) return;
+        java.util.List<Entity> passengers = dragon.getPassengers();
+        if (passengers.size() != 1) return;
+        Entity passenger = passengers.get(0);
+        if (!(passenger instanceof Mob mob)) return;
+        DragonRideState.setRiderId(dragon, mob.getUUID());
+        DragonRideState.setRiderDragon(mob, dragon.getUUID());
+    }
+
+    /** Runs from the tail of the dragon's own server-AI tick, after Ice and Fire has finished
+     * mutating flight flags and movement state for this tick. */
+    public static void tickFlight(EntityDragonBase dragon) {
+        if (dragon == null || !DragonRideState.isControlled(dragon)) return;
+        DragonFlightController.tick(dragon);
     }
 
     public static void beginControl(EntityDragonBase dragon) {
         if (dragon == null) return;
         if (DragonRideState.isControlled(dragon)) {
-            wake(dragon);
+            if (!DragonRideState.hasTask(dragon)) holdGround(dragon);
             return;
         }
         DragonRideState.setPrevCommand(dragon, dragon.getCommand());
+        // A fresh selection is not permission to resume an old NBT movement/attack order.
+        // Keep only the main mod's explicit offline task; every ordinary old flight target must
+        // be discarded before the controller can decide to take off.
+        if (!PlayerControl.hasPersistentVehicleTask(dragon)) {
+            DragonRideState.clearTask(dragon);
+            DragonRideState.clearAttackTarget(dragon);
+            DragonRideState.clearLandingSpot(dragon);
+            DragonRideState.clearLandingCooldown(dragon);
+            DragonFlightController.reset(dragon);
+        }
         DragonRideState.setControlled(dragon, true);
-        DragonRideState.setPhase(dragon, DragonRideState.Phase.GROUND);
         DragonRideState.setMission(dragon, DragonRideState.Mission.TRANSIT);
-        wake(dragon);
+        // Selecting an already-airborne dragon must never drop it to the ground: keep it
+        // cruising.  Only a grounded dragon is held in place.
+        boolean airborne = dragon.isFlying() || dragon.isHovering();
+        DragonRideState.setPhase(dragon, airborne ? DragonRideState.Phase.CRUISE : DragonRideState.Phase.GROUND);
+        if (airborne) {
+            dragon.setFlying(true);
+            dragon.setHovering(false);
+        } else {
+            holdGround(dragon);
+        }
+        // Keep the pre-selection Ice and Fire command (often "sit") until a real Dominion
+        // order arrives. Calling wake() here changes command 1 to command 0, which makes the
+        // native follow AI choose an unrelated destination and take off immediately.
     }
 
     /**
@@ -66,7 +113,7 @@ public final class DragonAutopilot {
             return;
         }
         boolean hasRider = DragonRideState.riderId(dragon) != null;
-        DragonRideState.clearControlState(dragon, hasRider, false);
+        DragonRideState.clearControlState(dragon, false);
         dragon.setCommand(hasRider ? 0 : DragonRideState.prevCommand(dragon));
         DragonRideState.setControlled(dragon, false);
         DragonRideState.setPhase(dragon, DragonRideState.Phase.GROUND);
@@ -81,9 +128,9 @@ public final class DragonAutopilot {
         if (dragon == null) return;
         DragonFlightController.reset(dragon);
         if (dragon.getTarget() != null) dragon.setTarget(null);
-        Mob rider = DragonRideState.riderEntity(dragon);
-        DragonRideState.clearControlState(dragon, false, false);
-        DragonRideState.clearRiderMarkers(dragon, rider);
+        // Deliberately keep the rider marker pair: a still-mounted rider must stay protected
+        // from the native prey-in-mouth pipeline even while the dragon is no longer controlled.
+        DragonRideState.clearControlState(dragon, false);
         DragonRideState.setControlled(dragon, false);
         dragon.setFlying(false);
         dragon.setHovering(false);
@@ -98,17 +145,22 @@ public final class DragonAutopilot {
     public static boolean updateTask(EntityDragonBase dragon, Vec3 target) {
         if (dragon == null || target == null) return false;
         Vec3 current = DragonRideState.hasTask(dragon) ? DragonRideState.task(dragon) : null;
-        if (!DragonMoveMath.goalChanged(current, target)) return false;
+        boolean changed = DragonMoveMath.goalChanged(current, target);
+        if (!changed) return false;
         DragonRideState.setTask(dragon, target);
         DragonRideState.setMission(dragon, DragonRideState.Mission.TRANSIT);
-        DragonRideState.setPhase(dragon, DragonRideState.Phase.GROUND);
+        // A new command while the dragon is airborne must redirect in the air, not slam it to
+        // the ground.  Ground phase is only used when the dragon is actually on the ground.
+        boolean airborne = DragonRideState.phase(dragon) != DragonRideState.Phase.GROUND
+                || dragon.isFlying() || dragon.isHovering();
+        DragonRideState.setPhase(dragon, airborne ? DragonRideState.Phase.CRUISE : DragonRideState.Phase.GROUND);
+        // A task pulse is a movement command; make sure the controller is armed even if a
+        // previous lifecycle path dropped the controlled marker (offline persistent tasks).
+        DragonRideState.setControlled(dragon, true);
         DragonRideState.clearLandingSpot(dragon);
         DragonRideState.clearLandingCooldown(dragon);
         DragonRideState.clearPathBackoff(dragon);
         wake(dragon);
-        if (dragon.onGround() && !dragon.isFlying() && dragon.hasFlightClearance()) {
-            beginTakeoff(dragon);
-        }
         return true;
     }
 
@@ -126,10 +178,20 @@ public final class DragonAutopilot {
         if (dragon == null || !DragonRideState.isControlled(dragon) || dragon.isModelDead() || !dragon.isAlive()) return;
         long now = dragon.level().getGameTime();
         if (now < DragonRideState.landingCooldownUntil(dragon)) return;
-        Vec3 spot = DragonLandingPlanner.findLandingSpot(dragon, center == null ? dragon.position() : center);
+        Vec3 request = center == null ? dragon.position() : center;
+        Vec3 spot = DragonLandingPlanner.findLandingSpot(dragon, request);
         if (spot == null) {
-            DragonRideState.setLandingCooldown(dragon, now + DragonLandingPlanner.COOLDOWN_TICKS);
-            return;
+            // Fallback: descend onto the motion-blocking surface under the requested point.
+            // Without this, a failed pad search left the dragon circling at cruise altitude while
+            // the cooldown deferred the landing attempt forever.
+            int surfaceY = dragon.level().getHeight(Heightmap.Types.MOTION_BLOCKING,
+                    (int) Math.floor(request.x), (int) Math.floor(request.z));
+            int minBuild = dragon.level().getMinBuildHeight();
+            int maxBuild = dragon.level().getMaxBuildHeight();
+            if (surfaceY <= minBuild || surfaceY >= maxBuild) {
+                surfaceY = Math.max(minBuild + 1, (int) Math.floor(dragon.getY()) - 1);
+            }
+            spot = new Vec3(request.x, surfaceY, request.z);
         }
         wake(dragon);
         DragonRideState.setLandingSpot(dragon, spot);
@@ -138,21 +200,55 @@ public final class DragonAutopilot {
         dragon.setHovering(false);
     }
 
-    /** Wakes the dragon and pins its native command to stand while controlled. */
+    /**
+     * Wakes the dragon without changing its native command.  Ice and Fire command 0 means
+     * "idle wander" and command 2 means "escort flight"; both make the native logic take off or
+     * pick a random destination.  Dominion owns movement, so the pre-selection command (usually
+     * 1 = sit) is deliberately preserved.
+     */
     public static void wake(EntityDragonBase dragon) {
         if (dragon == null) return;
-        dragon.setCommand(0);
         dragon.setInSittingPose(false);
         dragon.setOrderedToSit(false);
+    }
+
+    /** A selected dragon with no Dominion task must not be handed back to Ice and Fire wandering AI. */
+    public static void holdGround(EntityDragonBase dragon) {
+        if (dragon == null) return;
+        dragon.getNavigation().stop();
+        dragon.setDeltaMovement(Vec3.ZERO);
+        dragon.setFlying(false);
+        dragon.setHovering(false);
     }
 
     private static void refreshRider(EntityDragonBase dragon) {
         UUID riderId = DragonRideState.riderId(dragon);
         if (riderId == null) return;
         Mob rider = DragonRideState.riderEntity(dragon);
-        if (rider == null || !rider.isAlive() || rider.getVehicle() != dragon) {
+        if (rider == null) {
+            // The rider is not in the level's entity lookup yet (world load or chunk edge).
+            // Clearing the marker here races the board sequence and hands a still-mounted rider
+            // back to the native prey pipeline, so keep the marker until the rider is found.
+            return;
+        }
+        DragonFlightRegistry.RuntimeState runtime = DragonFlightRegistry.state(dragon);
+        if (!rider.isAlive() || rider.isRemoved()) {
             DragonRideState.clearRiderMarkers(dragon, rider);
             DragonRideState.setPhase(dragon, DragonRideState.Phase.GROUND);
+            runtime.riderMismatchTicks = 0;
+            return;
+        }
+        if (rider.getVehicle() == dragon && dragon.getPassengers().contains(rider)) {
+            runtime.riderMismatchTicks = 0;
+            return;
+        }
+        // Boarding and entity reload briefly expose an unresolved passenger relation.  Keep a
+        // short grace period, then remove both markers so a forced/external dismount cannot leave
+        // stale render state or permanent protection from this dragon.
+        if (++runtime.riderMismatchTicks >= RIDER_MISMATCH_GRACE_TICKS) {
+            DragonRideState.clearRiderMarkers(dragon, rider);
+            DragonRideState.setPhase(dragon, DragonRideState.Phase.GROUND);
+            runtime.riderMismatchTicks = 0;
         }
     }
 }

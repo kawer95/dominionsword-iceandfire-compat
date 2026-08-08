@@ -35,7 +35,12 @@ public final class DragonFlightRegistry {
         public int stalledTicks;
         public long replanTick;
         public long lastFireTick;
+        public int breathBurstTicks;
         public long lastHostileQueryTick;
+        public long lastFlapSoundTick;
+        public long lastRoarSoundTick;
+        public int orbitNoHostileTicks;
+        public net.minecraft.world.entity.LivingEntity orbitTarget;
         public int strafeStage;
         public long strafeStageStartTick;
         public Vec3 strafeAxis;
@@ -43,6 +48,11 @@ public final class DragonFlightRegistry {
         public Vec3 cachedCorridorOrigin;
         public long cachedCorridorTick = Long.MIN_VALUE;
         public long cachedCorridorEpoch;
+        public double terrainFloorY = Double.NaN;
+        public long terrainFloorTick;
+        public Vec3 terrainFloorOrigin;
+        public double lastYaw = Double.NaN;
+        public int riderMismatchTicks;
         public DragonPathPlanner.Job pathJob;
         public java.util.List<Vec3> path = java.util.List.of();
         private Bucket bucket;
@@ -67,6 +77,9 @@ public final class DragonFlightRegistry {
             strafeStageStartTick = 0L;
             strafeAxis = null;
             lastFireTick = 0L;
+            breathBurstTicks = 0;
+            orbitNoHostileTicks = 0;
+            orbitTarget = null;
         }
     }
 
@@ -78,6 +91,8 @@ public final class DragonFlightRegistry {
             state.dimension = dimension;
             state.resetNavigation();
             state.resetManeuver();
+            state.terrainFloorY = Double.NaN;
+            state.terrainFloorOrigin = null;
         }
         index(dragon, state);
         return state;
@@ -91,6 +106,14 @@ public final class DragonFlightRegistry {
 
     public static void remove(EntityDragonBase dragon) {
         if (dragon != null) remove(dragon.getUUID());
+    }
+
+    /** Clears all server-owned runtime state when the integrated or dedicated server stops. */
+    public static void clear() {
+        STATES.clear();
+        BUCKETS.clear();
+        COLLISION_EPOCHS.clear();
+        DragonPathPlanner.beginServerTick();
     }
 
     /** Called once from ServerTick.END, never from individual dragon controllers. */
