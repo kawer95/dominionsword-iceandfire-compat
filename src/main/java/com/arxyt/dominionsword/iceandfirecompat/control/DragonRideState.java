@@ -338,7 +338,6 @@ public final class DragonRideState {
             state.remove(MISSION);
             state.remove(AOE_RADIUS);
             state.remove(AOE_HALF_HEIGHT);
-            state.remove(STRAFE_READY);
         }
         state.remove(LANDING_COOLDOWN);
         clearPathBackoff(state);

@@ -21,11 +21,14 @@ import java.util.Set;
 public final class DragonPathPlanner {
     public static final int GLOBAL_EXPANSIONS_PER_TICK = 1024;
     public static final int PER_DRAGON_EXPANSIONS_PER_TICK = 128;
+    public static final int GLOBAL_COLLISION_CHECKS_PER_TICK = 512;
+    public static final int PER_DRAGON_COLLISION_CHECKS_PER_TICK = 96;
     public static final int MAX_EXPANSIONS_PER_JOB = 4096;
     private static final int MAX_OCCUPANCY = 8192;
     private static final long TIME_BUDGET_NANOS = 3_000_000L;
     private static final int[][] OFFSETS = offsets();
     private static int remainingExpansions;
+    private static int remainingCollisionChecks;
     private static long deadlineNanos;
 
     private DragonPathPlanner() {}
@@ -34,6 +37,7 @@ public final class DragonPathPlanner {
 
     public static void beginServerTick() {
         remainingExpansions = GLOBAL_EXPANSIONS_PER_TICK;
+        remainingCollisionChecks = GLOBAL_COLLISION_CHECKS_PER_TICK;
         deadlineNanos = System.nanoTime() + TIME_BUDGET_NANOS;
     }
 
@@ -53,34 +57,51 @@ public final class DragonPathPlanner {
         if (remainingExpansions <= 0 || System.nanoTime() >= deadlineNanos) return null;
         Level level = dragon.level();
         int local = 0;
-        while (!job.open.isEmpty() && local < PER_DRAGON_EXPANSIONS_PER_TICK
+        int localCollisionChecks = 0;
+        while ((job.active != null || !job.open.isEmpty()) && local < PER_DRAGON_EXPANSIONS_PER_TICK
                 && job.expansions < MAX_EXPANSIONS_PER_JOB && remainingExpansions > 0
+                && remainingCollisionChecks > 0 && localCollisionChecks < PER_DRAGON_COLLISION_CHECKS_PER_TICK
                 && System.nanoTime() < deadlineNanos) {
-            Node current = job.open.poll();
-            if (!job.closed.add(current.cell)) continue;
-            job.expansions++;
-            local++;
-            remainingExpansions--;
-            if (current.cell.equals(job.goal)) {
-                job.finished = true;
-                job.result = reconstruct(job, current.cell);
-                return job.result;
+            if (job.active == null) {
+                Node current;
+                do {
+                    current = job.open.poll();
+                } while (current != null && !job.closed.add(current.cell));
+                if (current == null) break;
+                job.active = current;
+                job.nextOffset = 0;
+                job.activeG = job.gScore.getOrDefault(current.cell, Double.POSITIVE_INFINITY);
+                job.expansions++;
+                local++;
+                remainingExpansions--;
+                if (current.cell.equals(job.goal)) {
+                    job.finished = true;
+                    job.result = reconstruct(job, current.cell);
+                    return job.result;
+                }
             }
-            double currentG = job.gScore.getOrDefault(current.cell, Double.POSITIVE_INFINITY);
-            for (int[] offset : OFFSETS) {
-                Cell next = new Cell(current.cell.x + offset[0], current.cell.y + offset[1], current.cell.z + offset[2]);
+            while (job.nextOffset < OFFSETS.length && remainingCollisionChecks > 0
+                    && localCollisionChecks < PER_DRAGON_COLLISION_CHECKS_PER_TICK
+                    && System.nanoTime() < deadlineNanos) {
+                int[] offset = OFFSETS[job.nextOffset++];
+                Cell next = new Cell(job.active.cell.x + offset[0], job.active.cell.y + offset[1], job.active.cell.z + offset[2]);
+                remainingCollisionChecks--;
+                localCollisionChecks++;
                 if (!open(dragon, level, job, next)) continue;
                 double horizontal = Math.hypot(offset[0], offset[2]);
                 double step = Math.sqrt(horizontal * horizontal + offset[1] * offset[1]) + Math.abs(offset[1]) * 1.25D;
-                double tentative = currentG + step;
+                double tentative = job.activeG + step;
                 if (tentative < job.gScore.getOrDefault(next, Double.POSITIVE_INFINITY)) {
                     job.gScore.put(next, tentative);
-                    job.cameFrom.put(next, current.cell);
+                    job.cameFrom.put(next, job.active.cell);
                     job.open.add(new Node(next, tentative + heuristic(next, job.goal)));
                 }
             }
+            if (job.nextOffset < OFFSETS.length) return null;
+            job.active = null;
+            job.nextOffset = 0;
         }
-        if (job.open.isEmpty() || job.expansions >= MAX_EXPANSIONS_PER_JOB) {
+        if ((job.active == null && job.open.isEmpty()) || job.expansions >= MAX_EXPANSIONS_PER_JOB) {
             job.finished = true;
             job.result = List.of();
             return job.result;
@@ -99,6 +120,9 @@ public final class DragonPathPlanner {
         final Map<Cell, Cell> cameFrom = new HashMap<>();
         final Set<Cell> closed = new HashSet<>();
         final Map<Cell, Boolean> occupancy = new HashMap<>();
+        Node active;
+        int nextOffset;
+        double activeG;
         int expansions;
         boolean finished;
         List<Vec3> result;

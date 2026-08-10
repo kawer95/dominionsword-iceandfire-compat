@@ -31,7 +31,9 @@ public final class DragonAutopilot {
                 if (!PlayerControl.isControlled(entity) || !player.getUUID().equals(PlayerControl.controller(entity))) continue;
                 if (!DragonRideState.isControlled(dragon)) continue;
                 if (!DragonControlPolicy.allows(player, dragon) || dragon.isRemoved() || !dragon.isAlive() || dragon.isModelDead()) {
-                    endControl(dragon);
+                    // Permission revocation, ownership changes and invalid entities are not a
+                    // graceful deselection.  A persistent offline task must never bypass them.
+                    forceEndControl(dragon);
                     continue;
                 }
                 refreshRider(dragon);

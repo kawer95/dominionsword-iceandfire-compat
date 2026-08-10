@@ -25,6 +25,8 @@ public final class DragonLandingPlanner {
     static final int VERTICAL_WINDOW = 24;
     static final int MAX_CANDIDATES = 64;
     static final int MAX_READS = 512;
+    static final int MAX_COLLISION_CELLS = 8192;
+    static final long TIME_BUDGET_NANOS = 2_000_000L;
     static final int COOLDOWN_TICKS = 40;
 
     private DragonLandingPlanner() {
@@ -85,6 +87,11 @@ public final class DragonLandingPlanner {
 
     private static boolean clearPad(EntityDragonBase dragon, Level level, Vec3 spot, BlockPos ground, Budget budget) {
         AABB moved = dragon.getBoundingBox().move(spot.x - dragon.getX(), spot.y - dragon.getY(), spot.z - dragon.getZ());
+        int sizeX = Math.max(1, (int) Math.ceil(moved.maxX) - (int) Math.floor(moved.minX));
+        int sizeY = Math.max(1, (int) Math.ceil(moved.maxY) - (int) Math.floor(moved.minY));
+        int sizeZ = Math.max(1, (int) Math.ceil(moved.maxZ) - (int) Math.floor(moved.minZ));
+        long volume = (long) sizeX * sizeY * sizeZ;
+        if (volume > Integer.MAX_VALUE || !budget.reserveCollision((int) volume)) return false;
         if (!level.noCollision(dragon, moved)) return false;
         int bottom = (int) Math.floor(moved.minY);
         int top = (int) Math.min(level.getMaxBuildHeight() - 1, (int) Math.ceil(moved.maxY));
@@ -116,9 +123,18 @@ public final class DragonLandingPlanner {
     private static final class Budget {
         int reads;
         int candidates;
+        int collisionCells;
+        final long deadline = System.nanoTime() + TIME_BUDGET_NANOS;
+
+        boolean reserveCollision(int cells) {
+            if (cells <= 0 || collisionCells > MAX_COLLISION_CELLS - cells || System.nanoTime() >= deadline) return false;
+            collisionCells += cells;
+            return true;
+        }
 
         boolean exceeded() {
-            return reads >= MAX_READS || candidates >= MAX_CANDIDATES;
+            return reads >= MAX_READS || candidates >= MAX_CANDIDATES
+                    || collisionCells >= MAX_COLLISION_CELLS || System.nanoTime() >= deadline;
         }
     }
 }

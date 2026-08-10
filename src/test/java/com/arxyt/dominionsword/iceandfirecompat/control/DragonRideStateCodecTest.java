@@ -44,6 +44,7 @@ class DragonRideStateCodecTest {
         assertFalse(state.contains("path_tick"));
         assertFalse(state.contains("path_fails"));
         assertFalse(state.contains("phase"));
+        assertEquals(12345L, state.getLong("strafe_ready"));
         assertTrue(state.getBoolean("controlled"));
         assertTrue(state.hasUUID("rider"));
     }
@@ -78,7 +79,7 @@ class DragonRideStateCodecTest {
         assertFalse(state.contains("task_x"));
         assertFalse(state.contains("mission"));
         assertFalse(state.contains("aoe_radius"));
-        assertFalse(state.contains("strafe_ready"));
+        assertEquals(12345L, state.getLong("strafe_ready"));
     }
 
     private static CompoundTag populatedState() {
@@ -93,6 +94,7 @@ class DragonRideStateCodecTest {
         state.putLong("path_tick", 99L);
         state.putInt("path_fails", 1);
         state.putString("phase", "CRUISE");
+        state.putLong("strafe_ready", 12345L);
         return state;
     }
 }

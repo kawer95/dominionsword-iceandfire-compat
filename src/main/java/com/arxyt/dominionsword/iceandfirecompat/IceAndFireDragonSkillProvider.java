@@ -70,6 +70,7 @@ public final class IceAndFireDragonSkillProvider implements DominionSkillProvide
         if (!Double.isFinite(center.x) || !Double.isFinite(center.y) || !Double.isFinite(center.z)) return false;
         ServerPlayer player = context.commander();
         if (ORBIT.equals(skillId)) {
+            if (dragon.distanceToSqr(center) > ORBIT_RANGE * ORBIT_RANGE) return false;
             if (!PlayerControl.redirectVehicleMove(player, dragon, center)) return false;
             DragonRideState.setMission(dragon, DragonRideState.Mission.ORBIT);
             DragonRideState.setTask(dragon, center);
@@ -78,6 +79,7 @@ public final class IceAndFireDragonSkillProvider implements DominionSkillProvide
             return true;
         }
         if (STRAFE.equals(skillId)) {
+            if (dragon.distanceToSqr(center) > STRAFE_RANGE * STRAFE_RANGE) return false;
             long now = dragon.level().getGameTime();
             if (now < DragonRideState.strafeReadyTick(dragon)) return false;
             if (!PlayerControl.redirectVehicleMove(player, dragon, center)) return false;

@@ -22,6 +22,8 @@ class DragonLandingPlannerTest {
         int fullSpace = DragonLandingPlanner.candidateCount();
         assertTrue(fullSpace > DragonLandingPlanner.MAX_CANDIDATES);
         assertTrue(DragonLandingPlanner.MAX_READS > 0);
+        assertTrue(DragonLandingPlanner.MAX_COLLISION_CELLS > DragonLandingPlanner.MAX_READS);
+        assertTrue(DragonLandingPlanner.TIME_BUDGET_NANOS > 0L);
     }
 
     @Test

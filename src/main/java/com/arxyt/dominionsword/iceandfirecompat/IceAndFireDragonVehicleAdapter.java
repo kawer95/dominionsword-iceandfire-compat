@@ -10,6 +10,7 @@ import com.arxyt.dominionsword.iceandfirecompat.control.DragonRideState;
 import com.iafenvoy.iceandfire.entity.EntityDragonBase;
 import com.mojang.logging.LogUtils;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.core.BlockPos;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
@@ -188,8 +189,7 @@ public final class IceAndFireDragonVehicleAdapter implements DominionVehicleAdap
 
     @Override
     public boolean move(ServerPlayer player, Entity vehicle, Vec3 target) {
-        if (!(vehicle instanceof EntityDragonBase dragon) || !valid(dragon) || target == null) return false;
-        if (!Double.isFinite(target.x) || !Double.isFinite(target.y) || !Double.isFinite(target.z)) return false;
+        if (!(vehicle instanceof EntityDragonBase dragon) || !valid(dragon) || !validTarget(dragon, target)) return false;
         if (player != null && (!DragonControlPolicy.allows(player, dragon) || !player.getUUID().equals(PlayerControl.controller(dragon))
                 || player.level() != dragon.level())) return false;
         if (player == null && !authorizedPersistentTask(dragon)) return false;
@@ -291,6 +291,14 @@ public final class IceAndFireDragonVehicleAdapter implements DominionVehicleAdap
 
     private static boolean valid(EntityDragonBase dragon) {
         return dragon != null && !dragon.isRemoved() && dragon.isAlive() && !dragon.isModelDead();
+    }
+
+    /** Adapter-boundary validation. Normal command range remains owned by Dominion Sword. */
+    private static boolean validTarget(EntityDragonBase dragon, Vec3 target) {
+        if (dragon == null || target == null || !Double.isFinite(target.x)
+                || !Double.isFinite(target.y) || !Double.isFinite(target.z)) return false;
+        if (target.y < dragon.level().getMinBuildHeight() || target.y >= dragon.level().getMaxBuildHeight()) return false;
+        return dragon.level().getWorldBorder().isWithinBounds(BlockPos.containing(target));
     }
 
     private static boolean canOperate(ServerPlayer player, EntityDragonBase dragon) {

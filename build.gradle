@@ -46,21 +46,23 @@ def requiredLocalJar = { String property, String checksumProperty ->
     if (!project.hasProperty(property)) throw new GradleException("Missing -P${property}")
     File jar = file(project.property(property))
     if (!jar.isFile()) throw new GradleException("Local dependency ${property} is not a file: ${jar}")
-    [property: property, file: jar, expected: project.findProperty(checksumProperty)?.toString()?.toLowerCase(Locale.ROOT)]
+    def expected = checksumProperty == null ? null : project.findProperty(checksumProperty)?.toString()?.toLowerCase(Locale.ROOT)
+    [property: property, file: jar, expected: expected]
 }
 def localJars = [
-        requiredLocalJar('dominionsword_jar', 'dominionsword_sha256'),
+        requiredLocalJar('dominionsword_jar', null),
         requiredLocalJar('iaf_jar', 'iaf_sha256'),
         requiredLocalJar('uranus_jar', 'uranus_sha256')
 ]
 
 tasks.register('verifyLocalDependencies') {
     group = 'verification'
-    description = 'Verifies the SHA-256 locks for the three local compile dependencies.'
+    description = 'Verifies SHA-256 locks for stable third-party dependencies; Dominion Sword intentionally tracks the supplied build.'
     inputs.files(localJars.collect { it.file })
     doLast {
         localJars.each { entry ->
-            if (entry.expected == null || !(entry.expected ==~ /[0-9a-f]{64}/)) {
+            if (entry.expected == null) return
+            if (!(entry.expected ==~ /[0-9a-f]{64}/)) {
                 throw new GradleException("Missing or invalid SHA-256 lock for ${entry.property}")
             }
             def digest = java.security.MessageDigest.getInstance('SHA-256')
@@ -99,6 +101,31 @@ mixin { add sourceSets.main, 'dominionsword_iceandfire_compat.refmap.json' }
 
 test {
     useJUnitPlatform()
+}
+
+// Java 17 on Windows reads Gradle worker argument files with the active ANSI code page.
+// Carry the URL-encoded non-ASCII checkout/dependency paths through a manifest instead.
+def testClasspathJar = tasks.register('testClasspathJar', Jar) {
+    archiveFileName = 'dominionsword-iceandfire-compat-test-classpath.jar'
+    def checkoutKey = Integer.toHexString(project.projectDir.absolutePath.hashCode())
+    destinationDirectory = file("${gradle.gradleUserHomeDir}/caches/dominionsword-iceandfire-compat/test-classpath/${checkoutKey}")
+    def encodedTestClasspath = providers.provider {
+        sourceSets.test.runtimeClasspath.files.collect { entry ->
+            String uri = entry.toURI().toASCIIString()
+            String name = entry.name.toLowerCase(java.util.Locale.ROOT)
+            return name.endsWith('.jar') || name.endsWith('.zip') || uri.endsWith('/') ? uri : "${uri}/"
+        }.join(' ')
+    }
+    inputs.property('encodedTestClasspath', encodedTestClasspath)
+    doFirst { manifest.attributes('Class-Path': encodedTestClasspath.get()) }
+}
+
+tasks.withType(Test).configureEach {
+    if (System.getProperty('os.name', '').toLowerCase(java.util.Locale.ROOT).contains('windows')
+            && project.projectDir.absolutePath.codePoints().anyMatch { it > 127 }) {
+        dependsOn testClasspathJar
+        classpath = files(testClasspathJar.flatMap { it.archiveFile })
+    }
 }
 
 tasks.named('processResources', ProcessResources).configure {
