@@ -1,44 +1,48 @@
 # Dominion Sword: Ice And Fire Compat 安全与性能审计
 
-> 审计日期：2026-08-06  
-> 审计对象：`kawer95/dominionsword-iceandfire-compat`  
-> 基线提交：`9a1fefb`（`main`）  
-> 审计范围：仓库内 Java 源码、Mixin、资源与 Gradle 构建链；不包含未入库的 Dominion Sword、Ice And Fire CE、Uranus 二进制实现  
+> 初次审计：2026-08-06；复审日期：2026-08-10
+> 审计对象：`kawer95/dominionsword-iceandfire-compat`
+> 复审基线：`f963c4a`（`main`）
+> 审计范围：仓库内 Java 源码、Mixin、资源与 Gradle 构建链；不包含未入库的 Dominion Sword、Ice And Fire CE、Uranus 二进制实现
 > 结论等级：**高风险，建议先修复 P0/P1 项再扩大服务器部署规模**
 
 ## 1. 执行摘要
 
-本次审计未在仓库源码及三次提交历史中发现硬编码令牌、私钥、密码、主动联网、命令执行或 Java 原生反序列化代码。资源 JSON 均可解析，Gradle Wrapper JAR 的 SHA-256 也能匹配 Gradle 官方已知文件，因此目前没有证据表明仓库被植入恶意代码。
+两次审计均未在仓库源码及当前四次提交历史中发现硬编码令牌、私钥、密码、主动联网、命令执行或 Java 原生反序列化代码。资源 JSON 均可解析，Gradle Wrapper JAR 的 SHA-256 也能匹配 Gradle 官方已知文件，因此目前没有证据表明仓库被植入恶意代码。
 
-主要风险集中在四个方面：
+复审确认：`9a1fefb..f963c4a` 没有源码变化，只新增了 `AUDIT_AND_FIX_PLAN.md`；因此原有安全和性能问题均仍存在。主要风险集中在五个方面：
 
 1. **TPS/拒绝服务风险**：飞行控制器在龙距离目标超过 8 格时，每 20 tick 重新执行一次最多 1024 节点、每节点 26 邻居的 3D A*；龙群分离逻辑又按每条龙扫描和复制全量状态，整体会随龙数量呈平方级增长。
 2. **权限撤销失效**：`endControl` 遇到持久任务会无条件返回。即使调用原因是权限已撤销、龙已死亡、玩家显式释放或控制者无效，也不会真正终止控制。
 3. **构建供应链风险**：声明的 Gradle 8.3 处于两个已公开漏洞的影响范围，且项目没有分发包校验值、依赖验证元数据或严格仓库内容过滤。
 4. **飞行可用性问题**：降落点存在确定的 Y 坐标偏移错误；路径跟随没有推进 `pathIndex`；路径规划将“网格 Y”与“方块 Y”直接比较。这些问题会导致无法降落、折返、无效重算或越过世界高度边界。
+5. **状态机与预算失真**：控制器尾部使用 tick 开始时的旧 `phase` 覆盖 `dispatch` 内的新状态，导致起飞首 tick 结束、自动降落阶段被反复覆盖；紧急悬停计数由三处同时加减；所谓节点/读取硬预算没有覆盖 AABB 碰撞体积和路径平滑采样。
 
 建议的修复顺序：
 
-- **P0**：S-01、P-01、R-01。
-- **P1**：S-02、P-02、R-02、S-03、S-04。
-- **P2**：P-03、P-04、R-03、R-04、S-05、T-01。
+- 复审去重后共 **21 项**：P0 5 项、P1 7 项、P2 9 项；其中 18 项已由仓库源码直接确认，3 项因依赖上游调用链或第三方实体行为而标记为“可能存在”。
+- **P0**：S-01、P-01、R-01、R-02、R-05。
+- **P1**：S-02、S-03、S-04、P-02、P-05、R-06、R-07。
+- **P2**：S-05、P-03、P-04、R-03、R-04、R-08、R-09、B-01、T-01。
 
 ## 2. 方法与限制
 
 本次工作包括：
 
-- 对 21 个主 Java 文件和 3 个测试文件逐文件静态审阅；
+- 对当前 20 个主 Java 文件和 3 个测试文件再次逐文件静态审阅；
 - 检查权限入口、离线任务、实体生命周期、Mixin 注入点、持久状态和客户端同步；
 - 检查每 tick 热路径、碰撞查询、实体扫描、路径规划、缓存和对象分配；
-- 解析全部 JSON 资源，并对 Git 历史执行常见凭据特征扫描；
+- 解析全部 JSON 资源，并对当前四次提交的完整 Git 历史执行仅报告命中文件名的常见凭据特征扫描；
 - 计算 `gradle-wrapper.jar` SHA-256，并与 Gradle 官方校验表对照；
-- 对固定构建工具版本核对上游安全公告；
+- 通过 Gradle 官方 GitHub Security Advisory API 再次核对固定构建工具版本，并从 `services.gradle.org` 获取 Wrapper/发行包官方 SHA-256；
 - 使用本地 Forge 1.20.1 映射 JAR 的字节码确认 `Level#getHeight` 返回表面上方第一个可用 Y。
+- 将 `AUDIT_AND_FIX_PLAN.md` 的合并结论逐项回查到源码；其中“只删除 `emergencyTicks` 递减”的建议会让当前双重递增从约 100 tick 变为约 50 tick，需按本报告 R-06 改为单一计数所有者。
 
 限制如下：
 
 - `dominionsword_jar`、`iaf_jar`、`uranus_jar` 均由本地路径提供且未入库，无法对这些二进制依赖做完整 SBOM/CVE 和调用契约审计。
 - 因缺少上述三个精确依赖，无法执行可信的全量编译、JUnit、GameTest 或专用服务端集成测试。仅把可由仓库源码直接证明的问题标记为“已确认”。
+- `./gradlew --version` 在下载仓库声明的 Gradle 8.3 发行包时超过 124 秒超时；下载的忽略目录已清理，未把不完整产物纳入提交。
 - S-03、S-05 的网络可利用性依赖 Dominion Sword 主模组是否在进入适配器前完成了不可绕过的服务端校验，因此标记为“可能存在”；但兼容模组本身缺少纵深校验是确定事实。
 
 ## 3. 风险总览
@@ -54,10 +58,16 @@
 | P-02 | 已确认 | 高 | 性能 | 注册表清理和多龙分离为 O(N²)，并产生大量临时 Map/Vec3 |
 | P-03 | 已确认 | 中 | 性能/正确性 | 占用缓存不设上限、不失效，长期增长且保留过期碰撞结果 |
 | P-04 | 已确认 | 中 | 性能 | 每条受控龙每 tick 最多 36 次完整 AABB 走廊碰撞检查并频繁写 NBT |
+| P-05 | 已确认 | 中 | 性能/拒绝服务 | A* 与降落的“硬预算”没有覆盖 AABB 体积、平滑采样和全部区块读取 |
 | R-01 | 已确认 | 高 | 可用性 | 降落点 Y 多加 1，正常实心地面会被当作空气拒绝 |
 | R-02 | 已确认 | 高 | 正确性/性能 | 路径索引从不推进，前视算法反复从旧起点扫描并可能引导折返 |
 | R-03 | 已确认 | 中 | 正确性 | 网格 Y 边界单位错误，远坐标键回绕，启发式存在整数溢出 |
 | R-04 | 已确认 | 中 | 兼容性 | 依赖范围远宽于实际验证范围，required Mixin 失败会阻止启动 |
+| R-05 | 已确认 | 高 | 状态机/性能 | tick 尾部用旧 phase 覆盖起飞和自动降落过程中刚写入的新 phase |
+| R-06 | 已确认 | 中 | 状态机 | 紧急计数一轮内两次递增、一次递减，修复计划若只删递减会把阈值减半 |
+| R-07 | 已确认 | 中 | 游戏完整性/性能 | 正常解除控制会删除持久化的 900 tick 掠袭冷却，可通过重新选择绕过 |
+| R-08 | 可能存在 | 中 | 降落安全 | 流体和火焰只检查候选中心列，没有覆盖大型龙的完整落地足迹 |
+| R-09 | 已确认 | 中 | 飞控稳定性 | 龙越过目标水平中心时悬停方向瞬间翻转，可能在目标两侧持续振荡 |
 | B-01 | 已确认 | 中 | 供应链 | Wrapper JAR 与声明版本不一致，分发包无 SHA-256 固定 |
 | T-01 | 已确认 | 中 | 质量保障 | 测试未覆盖真实降落、路径、权限撤销、Mixin 和龙群性能 |
 
@@ -201,6 +211,20 @@
 
 建议：对走廊结果做 2–5 tick 短缓存，只在方向/位置/方块版本变化时重采样；先做廉价射线/体素粗筛再做完整 AABB；状态 setter 在值不变时不写；运行时阶段放内存，必要事件才持久化；友军使用 UUID Set 快照并错峰刷新。
 
+### P-05：现有“硬预算”没有覆盖真正昂贵的碰撞工作
+
+**状态：已确认｜等级：中｜优先级：P1**
+
+证据：
+
+- [`DragonPathPlanner.java:59`](src/main/java/com/arxyt/dominionsword/iceandfirecompat/control/DragonPathPlanner.java#L59) 的 `MAX_EXPANSIONS` 只限制从优先队列取出的节点；每节点仍可对 26 个邻居调用 `isOpen`，而 [`DragonPathPlanner.java:141`](src/main/java/com/arxyt/dominionsword/iceandfirecompat/control/DragonPathPlanner.java#L141) 的完整龙 AABB `noCollision` 成本不计入预算。
+- [`DragonPathPlanner.java:106`](src/main/java/com/arxyt/dominionsword/iceandfirecompat/control/DragonPathPlanner.java#L106) 在规划完成后同步执行平滑；`segmentClear` 按路径长度逐格采样，且会从最远点反复回退尝试，没有独立采样上限或跨 tick 预算。
+- [`DragonLandingPlanner.java:87`](src/main/java/com/arxyt/dominionsword/iceandfirecompat/control/DragonLandingPlanner.java#L87) 的完整 AABB `noCollision` 同样不增加 `MAX_READS`，因此“512 读取”并不代表总方块/碰撞读取上限；龙体型越大，单次调用扫描体积越大。
+
+影响：合法的远距离命令、无解空间或大型龙可在单 tick 内触发远高于常量名称暗示的工作量。1024 节点和 64 候选限制了循环次数，却没有形成可靠的主线程时间上限。
+
+建议：把预算定义为可计量的“节点展开 + AABB 体素/区块访问 + 平滑样本”联合配额；搜索和平滑都做成可跨 tick 续算的任务；达到单 tick 配额立即让出主线程。对不同龙尺寸记录实际碰撞查询数和耗时，而不是只记录候选数。
+
 ### R-01：降落点 Y 偏移导致正常地面被拒绝
 
 **状态：已确认｜等级：高｜优先级：P0**
@@ -251,6 +275,65 @@
 
 建议：将 Minecraft 收紧为 `[1.20.1,1.20.2)`、Forge 收紧到 47.x；Ice And Fire 仅声明真实测试通过的版本；为每个支持版本运行客户端和专用服务端启动矩阵；统一 README 与 `mods.toml` 的 Dominion Sword 最低版本。
 
+### R-05：tick 尾部以旧 phase 覆盖状态机刚完成的转换
+
+**状态：已确认｜等级：高｜优先级：P0**
+
+证据：
+
+- [`DragonFlightController.java:54`](src/main/java/com/arxyt/dominionsword/iceandfirecompat/control/DragonFlightController.java#L54) 在 `dispatch` 之前把 `phase` 读入局部变量。
+- `dispatch` 内部可能改变状态：[`DragonFlightController.java:134`](src/main/java/com/arxyt/dominionsword/iceandfirecompat/control/DragonFlightController.java#L134) 在达到起飞高度时写 `CRUISE`；[`DragonFlightController.java:120`](src/main/java/com/arxyt/dominionsword/iceandfirecompat/control/DragonFlightController.java#L120) 通过 `beginLanding` 写 `LANDING`。
+- [`DragonFlightController.java:78`](src/main/java/com/arxyt/dominionsword/iceandfirecompat/control/DragonFlightController.java#L78) 随后仍依据 tick 开头的旧 `phase` 判断，并在旧值不是 `LANDING` 时无条件写 `CRUISE`。
+
+影响：`TAKEOFF` 在首个控制 tick 后就被写成 `CRUISE`，10 格起飞阶段实际上无法保持；从 `CRUISE` 到自动降落的转换也会在同 tick 被覆盖。龙到达目标时可能每 tick 重新搜索降落点、重复执行未纳入完整预算的碰撞工作，并且无法按设计完成落地清理。
+
+建议：不要在 tick 尾部无条件修正 phase。让每个状态处理器返回“速度 + 下一状态”，由一个位置原子提交；或在 `dispatch` 后重新读取当前 phase，并只允许显式的合法迁移。补充测试：TAKEOFF 在高度不足时连续保持、达到阈值后仅转换一次、TRANSIT 到 LANDING 不被覆盖、落地后只清理一次。
+
+### R-06：紧急悬停计数有三个写入点，当前修复计划会把等待时间减半
+
+**状态：已确认｜等级：中｜优先级：P1**
+
+证据：
+
+- [`DragonPathPlanner.java:86`](src/main/java/com/arxyt/dominionsword/iceandfirecompat/control/DragonPathPlanner.java#L86) 在规划失败时递增一次。
+- [`DragonFlightController.java:111`](src/main/java/com/arxyt/dominionsword/iceandfirecompat/control/DragonFlightController.java#L111) 发现空路径后再次递增，并立即检查 100 tick 阈值。
+- [`DragonFlightController.java:82`](src/main/java/com/arxyt/dominionsword/iceandfirecompat/control/DragonFlightController.java#L82) 在同一 tick 末尾又递减一次。空路径会令每 tick 都重规划，所以当前净变化约为 `+1/tick`，只是偶然接近设计值。
+- `AUDIT_AND_FIX_PLAN.md` 当前建议只移除末尾递减；若保留前两个递增点，净变化会变成 `+2/tick`，100 tick 阈值约 50 tick 即触发。
+
+影响：计数器不是清晰的“连续无安全航路 tick 数”，修复其中任一写入点都可能改变行为；成功规划后也没有直接清零，只依赖尾部逐 tick 衰减，旧失败会污染下一次任务。
+
+建议：规定唯一所有者。规划器只返回结果，不修改 `emergencyTicks`；控制器每个“本 tick 无可用路径”递增一次，获得可用路径或任务变化时清零，饱和到上限。用 99/100/101 tick 和“失败后成功再失败”测试锁定语义，并同步修正 `AUDIT_AND_FIX_PLAN.md`。
+
+### R-07：正常解除控制会清除掠袭冷却
+
+**状态：已确认｜等级：中｜优先级：P1**
+
+证据：[`IceAndFireDragonSkillProvider.java:75`](src/main/java/com/arxyt/dominionsword/iceandfirecompat/IceAndFireDragonSkillProvider.java#L75) 把 900 tick 冷却截止时间写入 `STRAFE_READY`；正常 `release` 最终调用 `clearControlState(..., false)`，而 [`DragonRideState.java:331`](src/main/java/com/arxyt/dominionsword/iceandfirecompat/control/DragonRideState.java#L331) 会删除同一字段。
+
+影响：在持久任务已经结束、解除控制可以正常完成的情况下，玩家可通过释放并重新选择龙来提前清除掠袭技能冷却。高频 AOE 掠袭既破坏玩法约束，也会增加范围查询和飞控负载。
+
+建议：把技能冷却与临时控制会话分离。正常 release、重新选择和区块重载都保留冷却；只有管理员修复、世界数据迁移或明确的死亡重置策略可以清除。添加“释放—重新选择—冷却仍剩余”的测试。
+
+### R-08：降落危险方块检查只覆盖候选中心列
+
+**状态：可能存在｜等级：中｜优先级：P2**
+
+证据：[`DragonLandingPlanner.java:86`](src/main/java/com/arxyt/dominionsword/iceandfirecompat/control/DragonLandingPlanner.java#L86) 用完整龙 AABB 做实体碰撞，但第 90–95 行检查流体和火焰时始终使用 `ground.getX()/getZ()`，只扫描中心的一列方块。火焰和流体通常不会被实体碰撞检查完整排除。
+
+影响：修复 R-01 后，大型龙的碰撞箱边缘仍可能覆盖岩浆、水或火焰；同时只验证中心地面，无法保证足够的落脚支撑。具体伤害和落地表现依赖 Ice And Fire 实现，因此标为可能存在。
+
+建议：遍历移动后 AABB 覆盖的完整 X/Z 足迹和必要 Y 范围，检查流体、火焰与危险方块标签；明确最小支撑面积。把“中心安全但翼/身体覆盖岩浆或火”的场景加入 GameTest。
+
+### R-09：悬停点方向会在越过目标中心时瞬间翻转
+
+**状态：已确认｜等级：中｜优先级：P2**
+
+证据：[`DragonFlightController.java:158`](src/main/java/com/arxyt/dominionsword/iceandfirecompat/control/DragonFlightController.java#L158) 每 tick 使用“目标到龙的当前水平向量”计算悬停点；当龙因惯性越过目标中心时，该向量符号翻转，第 163 行的期望悬停点会瞬间跳到目标另一侧约 20 格以外。运行时状态没有保存上一稳定悬停方向。
+
+影响：PD 阻尼尚未把速度降为零时，期望点可能反复换边，造成振荡、频繁转向和额外走廊/碰撞工作；目标水平位置与龙几乎重合时还会退化为直接悬停在目标正上方。
+
+建议：任务开始时保存稳定的水平锚定方向，只在目标显著移动、路径受阻或低速稳定后逐渐旋转；水平向量过小时沿用上一方向，不要根据符号瞬时翻面。添加“高速越过目标中心”和“目标与龙同 X/Z”的确定性测试。
+
 ### B-01：Wrapper 版本不一致且分发包未固定哈希
 
 **状态：已确认｜等级：中｜优先级：P2**
@@ -284,16 +367,19 @@
 ### 第一阶段：阻断高影响问题
 
 1. 修复降落 Y 偏移，并补真实 Level GameTest。
-2. 修复重规划条件和路径索引推进；加入全局规划预算。
-3. 引入强制终止路径，确保权限撤销、死亡、移除和显式释放不可被持久任务短路。
-4. 离线敌我判断改为默认拒绝攻击。
+2. 修复 tick 尾部旧 phase 覆盖，确保起飞、巡航、降落迁移由单一状态机提交。
+3. 修复重规划条件和路径索引推进；加入覆盖碰撞与平滑工作的全局规划预算。
+4. 引入强制终止路径，确保权限撤销、死亡、移除和显式释放不可被持久任务短路。
+5. 离线敌我判断改为默认拒绝攻击。
 
 ### 第二阶段：恢复可扩展性和纵深防御
 
 1. 注册表按维度和空间桶重构，`prune` 每服务器 tick 一次。
 2. 所有公开适配器/技能写入口本地重验权限、维度、范围和坐标有限性。
 3. 为占用缓存设置 TTL/容量/维度并在任务或世界变化时失效。
-4. 减少走廊 AABB 查询和重复 NBT 写入，加入可观测计数器。
+4. 统一紧急悬停计数所有者；成功规划和任务变化时清零。
+5. 将掠袭冷却从控制会话清理中分离，解除/重选不能重置冷却。
+6. 减少走廊 AABB 查询和重复 NBT 写入，加入可观测计数器。
 
 ### 第三阶段：加固构建与发布
 
@@ -308,6 +394,10 @@
 - 任意权限撤销、龙易主、死亡、移除或玩家释放后，下一个 server tick 内清除控制与攻击状态，即使存在持久任务。
 - 平地/屋顶/液体/火/洞穴/世界边界 GameTest 对降落行为全部给出预期结果。
 - 路径跟随单调推进剩余 waypoint，不回到已通过的旧起点。
+- TAKEOFF 在达到设定高度前持续有效；TRANSIT→LANDING 不被 tick 尾部覆盖，降落搜索不会每 tick 重启。
+- 连续无路 99 tick 不进入、100 tick 进入紧急悬停；成功获得路径后计数立即归零。
+- 释放并重新选择龙后，900 tick 掠袭冷却仍保持原截止时间。
+- 悬停龙越过目标中心时，期望悬停点连续变化且不会在两侧反复翻转。
 - 所有写入口对错误控制者、空调用者、跨维度、超距和非有限坐标均失败且状态零变化。
 - 依赖和 Wrapper 发生未审阅变化时 CI 失败；Gradle 版本不再落入已知公告的受影响范围。
 - 每个 `mods.toml` 宣称支持的组合都通过客户端和专用服务端启动测试。
@@ -315,11 +405,11 @@
 ## 7. 正向观察
 
 - 默认控制模式为 `OWNER_ONLY`，并已有集中式 `DragonControlPolicy`，便于修复时统一收口。
-- AOE 半径/高度已有 1–64 的上限，降落搜索也设置了候选和读取预算。
+- 固定 AOE 规格已有 1–64 的数值钳制，降落搜索也设置了候选和显式读取计数；仍需按 S-05/P-05 补 finite 校验和真实碰撞工作预算。
 - 运行时与持久状态职责有文档，清理字段集中在 `clearControlState`。
 - Mixin 目标、开发/生产方法名和设计意图有注释，资源 JSON 有效。
 - 仓库历史未发现凭据，Wrapper JAR 命中官方已知哈希；当前问题属于版本一致性与加固不足，而非已证实的恶意篡改。
 
 ---
 
-本报告是基于基线提交的代码审计快照，不等同于渗透测试，也不能替代对三个未入库依赖及 Dominion Sword 网络包处理器的独立审计。
+本报告是基于 `f963c4a` 的第二次代码审计快照，不等同于渗透测试，也不能替代对三个未入库依赖及 Dominion Sword 网络包处理器的独立审计。
