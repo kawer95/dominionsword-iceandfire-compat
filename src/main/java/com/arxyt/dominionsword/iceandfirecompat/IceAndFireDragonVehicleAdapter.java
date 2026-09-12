@@ -173,6 +173,29 @@ public final class IceAndFireDragonVehicleAdapter implements DominionVehicleAdap
     }
 
     @Override
+    public boolean supportsPlayerBoarding(ServerPlayer player, Entity vehicle, int seat) {
+        return player != null && player.isAlive() && vehicle instanceof EntityDragonBase dragon && seat == 0
+                && canOperate(player, dragon) && dragon.getDragonStage() >= 3 && !dragon.isBaby()
+                && !dragon.isFlying() && !dragon.isHovering();
+    }
+
+    @Override
+    public boolean boardPlayer(ServerPlayer player, Entity vehicle, int seat, boolean force) {
+        if (!supportsPlayerBoarding(player, vehicle, seat) || !(vehicle instanceof EntityDragonBase dragon)) return false;
+        if (player.getVehicle() == dragon) return true;
+        if (dragon.getControllingPassenger() != null || dragon.getPassengers().stream().anyMatch(passenger -> passenger != player)) return false;
+        DragonRideState.setRiderId(dragon, player.getUUID());
+        if (!player.startRiding(dragon, true)) {
+            DragonRideState.setRiderId(dragon, null);
+            return false;
+        }
+        DragonRideState.setPhase(dragon, DragonRideState.Phase.GROUND);
+        DragonAutopilot.wake(dragon);
+        dragon.getNavigation().stop();
+        return true;
+    }
+
+    @Override
     public boolean dismount(ServerPlayer player, Entity vehicle, int seat) {
         if (!(vehicle instanceof EntityDragonBase dragon) || seat != 0 || !canOperate(player, dragon)) return false;
         Mob rider = DragonRideState.riderEntity(dragon);
